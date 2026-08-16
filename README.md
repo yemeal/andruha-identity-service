@@ -44,5 +44,5 @@ The multi-stage image definition and factory-form Uvicorn command are present. D
 
 ## Canonical project material
 
-- [Documentation](../../docs/)
-- [Contracts](../../contracts/)
+- [Documentation](https://github.com/yemeal/andruha-messenger/tree/main/docs)
+- [Contracts](https://github.com/yemeal/andruha-messenger/tree/main/contracts)
