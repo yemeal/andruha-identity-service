@@ -1,9 +1,9 @@
 """Pure ASGI middleware for the request correlation boundary."""
 
 import asyncio
-from collections.abc import Callable
 import re
 import time
+from collections.abc import Callable
 
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.responses import JSONResponse, Response
@@ -21,7 +21,6 @@ from app.entrypoints.http.middlewares.request_lifecycle import (
     StructlogRequestContext,
     StructlogRequestLifecycleObserver,
 )
-
 
 Clock = Callable[[], float]
 InternalErrorResponseFactory = Callable[[], Response]
@@ -62,12 +61,8 @@ class RequestIdMiddleware:
         self._app = app
         self._resolver = resolver or ValidatedRequestIdResolver()
         self._request_context = request_context or StructlogRequestContext()
-        self._observer = (
-            observer or StructlogRequestLifecycleObserver()
-        )
-        self._internal_error_response_factory = (
-            internal_error_response_factory
-        )
+        self._observer = observer or StructlogRequestLifecycleObserver()
+        self._internal_error_response_factory = internal_error_response_factory
         self._header_name = header_name
         self._state_key = state_key
         self._clock = clock
@@ -98,9 +93,7 @@ class RequestIdMiddleware:
             if message["type"] == "http.response.start":
                 response.start(message["status"])
                 outbound_message = dict(message)
-                MutableHeaders(scope=outbound_message)[
-                    self._header_name
-                ] = request_id
+                MutableHeaders(scope=outbound_message)[self._header_name] = request_id
 
             try:
                 await send(outbound_message)
@@ -118,9 +111,7 @@ class RequestIdMiddleware:
                     send_with_request_id,
                 )
                 if not response.response_started:
-                    raise RuntimeError(
-                        "ASGI application returned without a response"
-                    )
+                    raise RuntimeError("ASGI application returned without a response")
             except asyncio.CancelledError:
                 response.mark_failure()
                 raise

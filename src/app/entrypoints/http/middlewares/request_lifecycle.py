@@ -1,6 +1,6 @@
 """Observability adapters for a request-scoped ASGI lifecycle."""
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -20,7 +20,7 @@ class StructlogRequestContext:
     field_name: str = "request_id"
 
     @contextmanager
-    def bind(self, request_id: str) -> Iterator[None]:
+    def bind(self, request_id: str) -> Generator[None]:
         clear_contextvars()
         try:
             with bound_contextvars(**{self.field_name: request_id}):

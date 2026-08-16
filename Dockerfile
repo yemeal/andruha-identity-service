@@ -13,7 +13,7 @@ ENV POETRY_VIRTUALENVS_IN_PROJECT=1 \
 RUN pip install --no-cache-dir "poetry==${POETRY_VERSION}"
 
 WORKDIR /app
-COPY pyproject.toml ./
+COPY pyproject.toml poetry.lock ./
 RUN --mount=type=cache,target=/tmp/poetry-cache \
     poetry install --only main --no-root --no-ansi
 

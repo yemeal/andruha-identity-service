@@ -1,11 +1,10 @@
 """Policy for resolving a safe request correlation ID."""
 
+import re
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-import re
 from typing import Protocol
-import uuid
-
 
 RequestIdGenerator = Callable[[], str]
 

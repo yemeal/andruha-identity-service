@@ -1,8 +1,8 @@
 """Environment-backed bootstrap settings with no external dependency."""
 
+import os
 from dataclasses import dataclass
 from functools import lru_cache
-import os
 
 
 def _read_bool(name: str, default: bool) -> bool:

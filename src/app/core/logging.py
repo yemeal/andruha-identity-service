@@ -1,21 +1,20 @@
 """Structured logging bootstrap for the service process."""
 
-from collections.abc import MutableMapping
 import logging
 import logging.config
+from collections.abc import MutableMapping
 from typing import Any
 
 import structlog
 
 from app.core.settings import Settings, get_settings
 
-
 EventDict = MutableMapping[str, Any]
 
 
 def _log_level(settings: Settings) -> int:
-    level = logging.getLevelName(settings.LOG_LEVEL)
-    if not isinstance(level, int):
+    level = logging.getLevelNamesMapping().get(settings.LOG_LEVEL)
+    if level is None:
         raise ValueError(f"Unsupported LOG_LEVEL: {settings.LOG_LEVEL}")
     return level
 

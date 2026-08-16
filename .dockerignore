@@ -2,7 +2,6 @@
 .gitignore
 .env
 .venv
-poetry.lock
 __pycache__
 *.py[cod]
 .pytest_cache

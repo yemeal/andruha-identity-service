@@ -40,7 +40,21 @@ No business API or transport contract is available yet.
 
 ## Local build and run status
 
-The multi-stage image definition and factory-form Uvicorn command are present. Dependency bootstrap is deferred: runtime dependencies and a lock file are intentionally absent, so application image startup is not supported in this stage.
+Runtime and test dependencies are declared and locked for Python 3.14. The
+service can be verified from this repository with:
+
+```powershell
+poetry sync --with dev --no-root
+poetry run ruff check .
+poetry run ruff format --check .
+poetry run pytest
+docker build --target runtime --tag andruha/identity-service:local .
+```
+
+`.github/workflows/ci.yml` runs lint, strict Pyright, unit and integration
+tests, branch coverage >= 80%, runtime dependency audit, secret scanning, and a
+Docker smoke test. `.github/workflows/release.yml` publishes a verified image
+to GHCR only for a version tag. Business APIs and persistence remain deferred.
 
 ## Canonical project material
 

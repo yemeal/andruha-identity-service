@@ -1,6 +1,6 @@
 """FastAPI application factory for the operational HTTP skeleton."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import structlog
@@ -11,12 +11,11 @@ from app.core.settings import get_settings
 from app.entrypoints.http.middlewares import RequestIdMiddleware
 from app.entrypoints.http.routers.health import router as health_router
 
-
 logger = structlog.get_logger()
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     app.state.ready = True
     logger.info("application started", version=app.version)
     try:

@@ -5,9 +5,61 @@ description = "Credentials and authentication session boundary skeleton"
 readme = "README.md"
 requires-python = ">=3.14,<4.0"
 dependencies = [
+    "fastapi (>=0.141.1,<0.142.0)",
+    "starlette (>=1.6.0,<2.0.0)",
+    "structlog (>=26.1.0,<27.0.0)",
+    "uvicorn (>=0.52.3,<0.53.0)"
 ]
 
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "ruff (>=0.16.3,<0.17.0)",
+    "pytest (>=9.1.1,<10.0.0)",
+    "pytest-asyncio (>=1.4.0,<2.0.0)",
+    "pytest-cov (>=7.1.0,<8.0.0)",
+    "pip-audit (>=2.10.1,<3.0.0)",
+    "httpx2 (>=2.10.0,<3.0.0)"
+]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "SIM", "UP", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.pyright]
+include = ["src"]
+exclude = ["**/__pycache__"]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+markers = [
+    "integration: test that crosses an application or adapter boundary",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["app"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true
