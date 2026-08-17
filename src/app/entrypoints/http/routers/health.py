@@ -1,8 +1,31 @@
-"""Process liveness and application-readiness routes."""
+import asyncio
 
-from fastapi import APIRouter, Request, Response, status
+from dishka import FromDishka
+from dishka.integrations.fastapi import inject
+from fastapi import APIRouter, Response
+from redis.asyncio import Redis
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 router = APIRouter(prefix="/health", tags=["health"])
+
+
+async def check_postgres(engine: AsyncEngine) -> bool:
+    try:
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
+
+
+async def check_valkey(client: Redis) -> bool:
+    try:
+        return bool(
+            await client.ping()  # pyright: ignore[reportUnknownMemberType]
+        )
+    except Exception:
+        return False
 
 
 @router.get("/live")
@@ -11,12 +34,17 @@ async def live() -> dict[str, str]:
 
 
 @router.get("/ready")
+@inject
 async def ready(
-    request: Request,
-    response: Response,
+    response: Response, engine: FromDishka[AsyncEngine], client: FromDishka[Redis]
 ) -> dict[str, str]:
-    is_ready = bool(getattr(request.app.state, "ready", False))
-    if not is_ready:
-        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-
-    return {"status": "ready" if is_ready else "unavailable"}
+    postgres_ok, valkey_ok = await asyncio.gather(
+        check_postgres(engine), check_valkey(client)
+    )
+    if not postgres_ok:
+        response.status_code = 503
+    return {
+        "status": "ready" if postgres_ok else "unavailable",
+        "postgres": "ok" if postgres_ok else "unavailable",
+        "valkey": "ok" if valkey_ok else "degraded",
+    }

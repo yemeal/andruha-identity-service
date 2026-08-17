@@ -27,6 +27,37 @@ jobs:
     name: Quality and tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      DATABASE_HOST: 127.0.0.1
+      DATABASE_PORT: "5432"
+      DATABASE_USER: andruha_identity
+      DATABASE_PASSWORD: identity-local-only
+      DATABASE_NAME: andruha_identity
+      IDENTITY_TEST_DATABASE_URL: postgresql+asyncpg://andruha_identity:identity-local-only@127.0.0.1:5432/andruha_identity
+      IDENTITY_TEST_VALKEY_URL: redis://127.0.0.1:6379/15
+    services:
+      postgres:
+        image: postgres:17.10-bookworm
+        env:
+          POSTGRES_USER: andruha_identity
+          POSTGRES_PASSWORD: identity-local-only
+          POSTGRES_DB: andruha_identity
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready --username andruha_identity --dbname andruha_identity"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+      valkey:
+        image: valkey/valkey:8.1.9-alpine3.24
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
 
     steps:
       - name: Checkout repository
@@ -55,6 +86,9 @@ jobs:
 
       - name: Install locked dependencies
         run: poetry sync --with dev --no-root --no-ansi
+
+      - name: Upgrade empty Identity database
+        run: poetry run alembic upgrade head
 
       - name: Ruff lint
         run: poetry run ruff check --output-format=github .
@@ -160,6 +194,9 @@ jobs:
           test -n "${service_port}"
 
           container_name="${GITHUB_REPOSITORY##*/}-smoke-${GITHUB_RUN_ID}"
+          postgres_name="${container_name}-postgres"
+          network_name="${container_name}-network"
+          secrets_dir="$(mktemp -d)"
           headers_file="$(mktemp)"
           live_body="$(mktemp)"
           ready_body="$(mktemp)"
@@ -168,15 +205,54 @@ jobs:
             exit_code=$?
             if [ "${exit_code}" -ne 0 ]; then
               docker logs "${container_name}" || true
+              docker logs "${postgres_name}" || true
             fi
             docker stop "${container_name}" >/dev/null 2>&1 || true
+            docker stop "${postgres_name}" >/dev/null 2>&1 || true
+            docker network rm "${network_name}" >/dev/null 2>&1 || true
+            rm -rf "${secrets_dir}"
             exit "${exit_code}"
           }
           trap cleanup EXIT
 
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
+            -out "${secrets_dir}/jwt-private.pem" >/dev/null 2>&1
+          openssl rsa -pubout -in "${secrets_dir}/jwt-private.pem" \
+            -out "${secrets_dir}/jwt-public.pem" >/dev/null 2>&1
+          openssl rand -out "${secrets_dir}/replay-v1.key" 32
+
+          docker network create "${network_name}" >/dev/null
+          docker run --detach --rm \
+            --name "${postgres_name}" \
+            --network "${network_name}" \
+            --env POSTGRES_USER=andruha_identity \
+            --env POSTGRES_PASSWORD=identity-local-only \
+            --env POSTGRES_DB=andruha_identity \
+            postgres:18-alpine
+
+          for _ in {1..30}; do
+            if docker exec "${postgres_name}" pg_isready \
+              --username andruha_identity --dbname andruha_identity; then
+              break
+            fi
+            sleep 1
+          done
+
           docker run --detach --rm \
             --name "${container_name}" \
+            --network "${network_name}" \
             --publish "127.0.0.1:18080:${service_port}" \
+            --env DATABASE_HOST="${postgres_name}" \
+            --env DATABASE_USER=andruha_identity \
+            --env DATABASE_PASSWORD=identity-local-only \
+            --env DATABASE_NAME=andruha_identity \
+            --env RUN_MIGRATIONS=true \
+            --env JWT_PRIVATE_KEY_PATH=/run/secrets/identity_jwt_private_key \
+            --env JWT_PUBLIC_KEY_PATH=/run/secrets/identity_jwt_public_key \
+            --env REPLAY_ENCRYPTION_KEY_PATHS=replay-v1=/run/secrets/identity_replay_key \
+            --volume "${secrets_dir}/jwt-private.pem:/run/secrets/identity_jwt_private_key:ro" \
+            --volume "${secrets_dir}/jwt-public.pem:/run/secrets/identity_jwt_public_key:ro" \
+            --volume "${secrets_dir}/replay-v1.key:/run/secrets/identity_replay_key:ro" \
             "${IMAGE_NAME}"
 
           for _ in {1..30}; do
@@ -198,3 +274,5 @@ jobs:
             --output "${ready_body}" \
             http://127.0.0.1:18080/health/ready
           grep --quiet '"status":"ready"' "${ready_body}"
+          grep --quiet '"postgres":"ok"' "${ready_body}"
+          grep --quiet '"valkey":"degraded"' "${ready_body}"

@@ -89,12 +89,14 @@ def setup_logging(settings: Settings | None = None) -> None:
         }
     )
 
-    for logger_name in logging.root.manager.loggerDict:
+    muted_loggers = (*current_settings.MUTE_LOGGERS, "sqlalchemy")
+    logger_names = {*logging.root.manager.loggerDict, *muted_loggers}
+    for logger_name in logger_names:
         logger = logging.getLogger(logger_name)
         logger.handlers.clear()
         logger.propagate = True
-        logger.setLevel(
-            max(level, logging.WARNING)
-            if logger_name in current_settings.MUTE_LOGGERS
-            else level
+        is_muted = any(
+            logger_name == muted or logger_name.startswith(f"{muted}.")
+            for muted in muted_loggers
         )
+        logger.setLevel(max(level, logging.WARNING) if is_muted else logging.NOTSET)
