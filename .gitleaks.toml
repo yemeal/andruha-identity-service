@@ -1,0 +1,11 @@
+title = "Andruha Identity Service gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allow the exact pinned public Valkey CI image reference"
+condition = "AND"
+regexTarget = "line"
+paths = ['''^\.github/workflows/ci\.yml$''']
+regexes = ['''^\s*image:\s+valkey/valkey:8\.1\.9-alpine3\.24\s*$''']

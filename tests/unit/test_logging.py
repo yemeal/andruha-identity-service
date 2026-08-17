@@ -44,9 +44,13 @@ def test_service_context_adds_defaults_without_overwriting_values() -> None:
 @pytest.mark.parametrize("dev_logs", [True, False])
 def test_setup_logging_configures_root_and_muted_loggers(dev_logs: bool) -> None:
     logging.getLogger("chatty")
+    logging.getLogger("chatty.child")
+    logging.getLogger("sqlalchemy.engine.Engine")
 
     setup_logging(make_settings(dev_logs=dev_logs, log_level="DEBUG"))
 
     assert logging.getLogger().level == logging.DEBUG
     assert logging.getLogger("chatty").level == logging.WARNING
+    assert logging.getLogger("chatty.child").level == logging.WARNING
+    assert logging.getLogger("sqlalchemy.engine.Engine").level == logging.WARNING
     assert logging.getLogger("chatty").propagate is True
