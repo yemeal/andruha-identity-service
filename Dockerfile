@@ -33,6 +33,8 @@ RUN groupadd --gid ${APP_GID} appuser \
 WORKDIR /app
 COPY --from=builder /app/.venv ./.venv
 COPY src/ ./src/
+COPY alembic.ini ./
+COPY alembic/ ./alembic/
 COPY docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
 
