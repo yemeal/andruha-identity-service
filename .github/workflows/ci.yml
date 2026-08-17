@@ -207,7 +207,7 @@ jobs:
               docker logs "${container_name}" || true
               docker logs "${postgres_name}" || true
             fi
-            docker stop "${container_name}" >/dev/null 2>&1 || true
+            docker rm --force "${container_name}" >/dev/null 2>&1 || true
             docker stop "${postgres_name}" >/dev/null 2>&1 || true
             docker network rm "${network_name}" >/dev/null 2>&1 || true
             rm -rf "${secrets_dir}"
@@ -220,6 +220,10 @@ jobs:
           openssl rsa -pubout -in "${secrets_dir}/jwt-private.pem" \
             -out "${secrets_dir}/jwt-public.pem" >/dev/null 2>&1
           openssl rand -out "${secrets_dir}/replay-v1.key" 32
+          chmod 0644 \
+            "${secrets_dir}/jwt-private.pem" \
+            "${secrets_dir}/jwt-public.pem" \
+            "${secrets_dir}/replay-v1.key"
 
           docker network create "${network_name}" >/dev/null
           docker run --detach --rm \
@@ -238,7 +242,7 @@ jobs:
             sleep 1
           done
 
-          docker run --detach --rm \
+          docker run --detach \
             --name "${container_name}" \
             --network "${network_name}" \
             --publish "127.0.0.1:18080:${service_port}" \
