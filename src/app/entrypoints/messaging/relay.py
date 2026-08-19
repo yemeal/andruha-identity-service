@@ -2,8 +2,8 @@ import asyncio
 import signal
 from types import FrameType
 
-import structlog
 from faststream.kafka import KafkaBroker
+import structlog
 
 from app.application.services.outbox_relay import OutboxRelayService
 from app.core.logging import setup_logging

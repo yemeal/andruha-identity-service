@@ -1,7 +1,7 @@
 import asyncio
-import time
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
+import time
 from typing import Any
 
 import structlog

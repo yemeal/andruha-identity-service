@@ -2,7 +2,6 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import cast
 
-import structlog
 from dishka.integrations.fastapi import setup_dishka
 from fastapi import FastAPI
 from prometheus_client import (
@@ -11,6 +10,7 @@ from prometheus_client import (
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.types import ASGIApp
+import structlog
 
 from app.application.ports.idempotency import (
     HotIdempotencyStoreProtocol,

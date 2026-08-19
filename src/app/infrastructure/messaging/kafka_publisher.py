@@ -1,6 +1,6 @@
-import structlog
 from faststream.exceptions import FastStreamException
 from faststream.kafka import KafkaBroker
+import structlog
 
 from app.application.exceptions import (
     PermanentPublishError,

@@ -10,10 +10,10 @@ from app.core.settings import (
     SecuritySettings,
     Settings,
     ValkeySettings,
-    _read_bool,
-    _read_mute_loggers,
-    _read_port,
     get_settings,
+    read_bool,
+    read_mute_loggers,
+    read_port,
 )
 from app.domain.exceptions import DomainErrors
 
@@ -25,7 +25,7 @@ def test_read_bool_accepts_true_values(
 ) -> None:
     monkeypatch.setenv("FEATURE", raw_value)
 
-    assert _read_bool("FEATURE", False) is True
+    assert read_bool("FEATURE", False) is True
 
 
 @pytest.mark.parametrize("raw_value", ["0", "false", "FALSE", " no ", "off"])
@@ -35,7 +35,7 @@ def test_read_bool_accepts_false_values(
 ) -> None:
     monkeypatch.setenv("FEATURE", raw_value)
 
-    assert _read_bool("FEATURE", True) is False
+    assert read_bool("FEATURE", True) is False
 
 
 def test_read_bool_uses_default_when_variable_is_missing(
@@ -43,14 +43,14 @@ def test_read_bool_uses_default_when_variable_is_missing(
 ) -> None:
     monkeypatch.delenv("FEATURE", raising=False)
 
-    assert _read_bool("FEATURE", True) is True
+    assert read_bool("FEATURE", True) is True
 
 
 def test_read_bool_rejects_unknown_value(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FEATURE", "sometimes")
 
     with pytest.raises(ValueError, match="FEATURE must be a boolean value"):
-        _read_bool("FEATURE", False)
+        read_bool("FEATURE", False)
 
 
 @pytest.mark.parametrize("port", [1, 8001, 65535])
@@ -60,7 +60,7 @@ def test_read_port_accepts_valid_range(
 ) -> None:
     monkeypatch.setenv("PORT", str(port))
 
-    assert _read_port(9000) == port
+    assert read_port(9000) == port
 
 
 @pytest.mark.parametrize("port", [0, 65536])
@@ -71,7 +71,7 @@ def test_read_port_rejects_out_of_range_value(
     monkeypatch.setenv("PORT", str(port))
 
     with pytest.raises(ValueError, match="PORT must be between 1 and 65535"):
-        _read_port(9000)
+        read_port(9000)
 
 
 def test_read_port_rejects_non_numeric_value(
@@ -80,7 +80,7 @@ def test_read_port_rejects_non_numeric_value(
     monkeypatch.setenv("PORT", "http")
 
     with pytest.raises(ValueError):
-        _read_port(9000)
+        read_port(9000)
 
 
 def test_read_mute_loggers_trims_and_drops_empty_items(
@@ -88,7 +88,7 @@ def test_read_mute_loggers_trims_and_drops_empty_items(
 ) -> None:
     monkeypatch.setenv("MUTE_LOGGERS", " uvicorn.access, ,httpx ")
 
-    assert _read_mute_loggers() == ("uvicorn.access", "httpx")
+    assert read_mute_loggers() == ("uvicorn.access", "httpx")
 
 
 def test_app_settings_defaults() -> None:

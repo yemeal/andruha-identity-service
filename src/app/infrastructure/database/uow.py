@@ -1,7 +1,7 @@
 from types import TracebackType
 
-import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
+import structlog
 
 # Протокол перенесён в application/ports/uow.py (порт принадлежит application-слою);
 # здесь остаётся только конкретная SQLAlchemy-реализация (адаптер).

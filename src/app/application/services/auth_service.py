@@ -4,8 +4,8 @@ from time import perf_counter
 from typing import Protocol
 from uuid import UUID
 
-import structlog
 from pydantic import BaseModel, ConfigDict, Field
+import structlog
 from structlog.typing import FilteringBoundLogger
 
 from app.application.ports.dto import AccessPrincipal

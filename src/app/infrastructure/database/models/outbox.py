@@ -1,8 +1,8 @@
-import uuid
 from datetime import datetime
+from typing import Any
+import uuid
 
-from sqlalchemy import UUID, CheckConstraint, DateTime, Index, String
-from sqlalchemy import Enum as SAEnum
+from sqlalchemy import UUID, CheckConstraint, DateTime, Enum as SAEnum, Index, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -17,7 +17,7 @@ class OutboxMessageORM(Base, UuidMixin, TimestampMixin):
     topic: Mapped[str] = mapped_column(String(255))
     key: Mapped[str] = mapped_column(String(255))
     type: Mapped[str] = mapped_column(String(100))
-    payload: Mapped[dict] = mapped_column(JSONB)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
     status: Mapped[OutboxStatus] = mapped_column(SAEnum(OutboxStatus))
     attempts: Mapped[int]
     last_error_class: Mapped[str | None] = mapped_column(String(255))

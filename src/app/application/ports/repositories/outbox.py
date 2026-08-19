@@ -1,5 +1,5 @@
-import uuid
 from datetime import datetime
+import uuid
 
 from app.application.ports.dto.outbox import OutboxMessage
 from app.application.ports.repositories.base import AsyncRepositoryProtocol

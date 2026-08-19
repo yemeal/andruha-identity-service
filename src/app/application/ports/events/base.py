@@ -1,6 +1,6 @@
-import uuid
 from datetime import datetime
 from typing import Any, Protocol
+import uuid
 
 
 class IntegrationEventProtocol(Protocol):

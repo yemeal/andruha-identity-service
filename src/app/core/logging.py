@@ -1,8 +1,8 @@
 """Structured logging bootstrap for the service process."""
 
+from collections.abc import MutableMapping
 import logging
 import logging.config
-from collections.abc import MutableMapping
 from typing import Any
 
 import structlog

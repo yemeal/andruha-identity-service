@@ -120,7 +120,8 @@ class Settings(BaseSettings):
         security_data: dict[str, Any] = {}
         idempotency_data: dict[str, Any] = {}
 
-        for k, v in list(data.items()):
+        raw_data: dict[str, Any] = {str(k): v for k, v in data.items()}
+        for k, v in list(raw_data.items()):
             k_lower = k.lower()
             if k_lower in app_keys:
                 app_data[k] = v
@@ -137,7 +138,7 @@ class Settings(BaseSettings):
             elif k_lower in idempotency_keys:
                 idempotency_data[k] = v
 
-        result = dict(data)
+        result = dict(raw_data)
         if app_data:
             if "app" in result and isinstance(result["app"], dict):
                 result["app"] = {**result["app"], **app_data}

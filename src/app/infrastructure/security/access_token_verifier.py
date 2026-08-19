@@ -3,8 +3,8 @@ from datetime import timedelta
 from types import MappingProxyType
 from typing import Final
 
-import jwt
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
+import jwt
 from pydantic import ValidationError
 
 from app.application.ports.dto.security import AccessTokenClaims

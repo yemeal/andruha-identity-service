@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from datetime import datetime, timedelta
+import json
 from typing import Protocol
 from uuid import UUID
 

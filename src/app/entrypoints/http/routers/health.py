@@ -37,9 +37,7 @@ async def live() -> dict[str, str]:
 # Сейчас HTTP-роутер напрямую зависит от драйверов (AsyncEngine, Redis) и сам
 # выполняет низкоуровневые запросы ('SELECT 1' и 'client.ping()').
 # Рекомендуемый рефакторинг:
-# 1. Создать порт в application/ports/health.py:
-#    class HealthCheckProtocol(Protocol):
-#        async def check_readiness(self) -> ReadinessStatus: ...
+# 1. Создать порт в application/ports/health.py (HealthCheckProtocol).
 # 2. Создать адаптер в infrastructure/observability/health_checker.py.
 # 3. Зарегистрировать провайдер HealthCheckProvider в DI (Dishka).
 # 4. Инжектить FromDishka[HealthCheckProtocol] в эндпоинт /health/ready вместо AsyncEngine и Redis.

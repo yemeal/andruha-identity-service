@@ -8,11 +8,11 @@ and finalizes, retries, or quarantines messages in short individual transactions
 from __future__ import annotations
 
 import asyncio
-import random
-import uuid
 from collections import defaultdict
 from collections.abc import Callable
 from datetime import datetime, timedelta
+import random
+import uuid
 
 import structlog
 

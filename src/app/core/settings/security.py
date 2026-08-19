@@ -40,14 +40,16 @@ class SecuritySettings(BaseContextSettings):
     @classmethod
     def _normalize_audiences(cls, value: object) -> object:
         if isinstance(value, (list, tuple, set, frozenset)):
-            return ",".join(str(item) for item in value)
+            items: tuple[object, ...] = tuple(value)
+            return ",".join(str(item) for item in items)
         return value
 
     @field_validator("replay_key_paths_raw", mode="before")
     @classmethod
     def _normalize_replay_paths(cls, value: object) -> object:
         if isinstance(value, dict):
-            return ",".join(f"{k}={v}" for k, v in value.items())
+            d: dict[object, object] = dict(value)
+            return ",".join(f"{k}={v}" for k, v in d.items())
         return value
 
     @property

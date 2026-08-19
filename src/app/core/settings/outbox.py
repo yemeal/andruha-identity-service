@@ -16,6 +16,5 @@ class OutboxSettings(BaseContextSettings):
 
     @field_validator("OUTBOX_RETRY_MAX_SECONDS")
     @classmethod
-    def validate_max_retry_seconds(cls, v: float, info: object) -> float:
-        # Note: Pydantic validation for cross-field consistency
+    def validate_max_retry_seconds(cls, v: float) -> float:
         return v

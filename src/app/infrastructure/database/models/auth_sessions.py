@@ -1,5 +1,5 @@
-import uuid
 from datetime import datetime
+import uuid
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, text
 from sqlalchemy.orm import Mapped, mapped_column

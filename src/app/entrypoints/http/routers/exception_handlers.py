@@ -199,8 +199,9 @@ def register_exception_handlers(
     idempotency_retry_after_seconds: int = 1,
 ) -> None:
     for error_type, spec in _HTTP_ERROR_SPECS.items():
+        active_spec = spec
         if error_type is IdempotencyRequestInProgressError:
-            spec = HttpErrorSpec(
+            active_spec = HttpErrorSpec(
                 status_code=spec.status_code,
                 code=spec.code,
                 detail=spec.detail,
@@ -212,4 +213,4 @@ def register_exception_handlers(
                     ),
                 ),
             )
-        app.add_exception_handler(error_type, _create_exception_handler(spec))
+        app.add_exception_handler(error_type, _create_exception_handler(active_spec))
