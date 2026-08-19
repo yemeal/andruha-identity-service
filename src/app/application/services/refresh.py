@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from typing import Protocol
 from uuid import UUID
 
 from app.application.exceptions.idempotency import (
@@ -34,7 +35,6 @@ from app.application.value_objects.idempotency import (
     ExecutionOutcome,
     IdempotencyIdentity,
 )
-from app.core.settings import Settings
 from app.domain.base import utc_now
 from app.domain.exceptions import DomainErrors, InvalidRefreshTokenError
 from app.domain.refresh_tokens import RefreshToken
@@ -43,6 +43,16 @@ PUBLIC_REFRESH_SUBJECT = "public-refresh"
 REFRESH_OPERATION = "auth.refresh"
 SUCCESS_RESULT = "auth.refresh.success"
 REJECTED_RESULT = "auth.refresh.rejected"
+
+
+class TransactionalRefreshOperationProtocol(Protocol):
+    async def execute(
+        self, raw_token: str, identity: IdempotencyIdentity, request_hash: bytes
+    ) -> StoredResult: ...
+
+
+class RefreshUseCaseProtocol(Protocol):
+    async def execute(self, *, refresh_token: str, key_hash: bytes) -> TokenPair: ...
 
 
 def replay_aad(
@@ -66,7 +76,7 @@ def replay_aad(
     ).encode()
 
 
-class TransactionalRefreshOperation:
+class TransactionalRefreshOperation(TransactionalRefreshOperationProtocol):
     """Refresh business effect. The caller owns the already-open SQL transaction."""
 
     def __init__(
@@ -77,16 +87,12 @@ class TransactionalRefreshOperation:
         issuer: AccessTokenIssuerProtocol,
         codec: OpaqueRefreshTokenCodecProtocol,
         protector: ReplayResultProtectorProtocol,
-        settings: Settings,
+        session_idle_ttl: timedelta = timedelta(days=30),
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._users, self._tokens, self._sessions = users, tokens, sessions
-        self._issuer, self._codec, self._protector, self._settings = (
-            issuer,
-            codec,
-            protector,
-            settings,
-        )
+        self._issuer, self._codec, self._protector = issuer, codec, protector
+        self._session_idle_ttl = session_idle_ttl
         self._clock = clock
 
     async def execute(
@@ -120,9 +126,7 @@ class TransactionalRefreshOperation:
         issued_refresh = self._codec.issue()
         token.consume(now)
         await self._tokens.update(token)
-        session.extend_idle(
-            now, timedelta(seconds=self._settings.AUTH_SESSION_IDLE_TTL_SECONDS)
-        )
+        session.extend_idle(now, self._session_idle_ttl)
         await self._sessions.update(session)
         replacement = await self._tokens.create(
             RefreshToken(session_id=session.id, token_hash=issued_refresh.digest)
@@ -140,21 +144,22 @@ class TransactionalRefreshOperation:
         )
 
 
-class RefreshUseCase:
+class RefreshUseCase(RefreshUseCaseProtocol):
     def __init__(
         self,
         coordinator: IdempotencyCoordinatorProtocol,
-        operation: TransactionalRefreshOperation,
+        operation: TransactionalRefreshOperationProtocol,
         tokens: RefreshTokenRepositoryProtocol,
         sessions: AuthSessionRepositoryProtocol,
         codec: OpaqueRefreshTokenCodecProtocol,
         protector: ReplayResultProtectorProtocol,
         uow: AsyncUOWProtocol,
-        settings: Settings,
+        lease_seconds: int = 30,
     ) -> None:
         self._coordinator, self._operation = coordinator, operation
         self._tokens, self._sessions, self._codec = tokens, sessions, codec
-        self._protector, self._uow, self._settings = protector, uow, settings
+        self._protector, self._uow = protector, uow
+        self._lease_seconds = lease_seconds
 
     async def execute(self, *, refresh_token: str, key_hash: bytes) -> TokenPair:
         identity = IdempotencyIdentity(
@@ -173,7 +178,7 @@ class RefreshUseCase:
             identity,
             request_hash,
             effect,
-            lease_seconds=self._settings.IDEMPOTENCY_LEASE_SECONDS,
+            lease_seconds=self._lease_seconds,
         )
         if result.outcome is ExecutionOutcome.CONFLICT:
             raise IdempotencyKeyConflictError()
