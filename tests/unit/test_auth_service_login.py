@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from uuid import UUID
 
@@ -15,9 +14,9 @@ from app.application.ports.dto.security import (
     AccessTokenClaims,
     IssuedRefreshToken,
 )
+from app.application.ports.events import UserRegisteredEvent
 from app.application.ports.security import AccessTokenVerifierProtocol
 from app.application.services.auth_service import AuthService
-from app.core.settings import Settings
 from app.domain.auth_sessions import AuthSession
 from app.domain.exceptions import (
     DomainErrors,
@@ -182,6 +181,14 @@ class RecordingAccessTokenVerifier:
         return AccessTokenClaims.model_construct(user_id=self.user_id)
 
 
+class FakeEventPublisher:
+    def __init__(self) -> None:
+        self.published: list[UserRegisteredEvent] = []
+
+    async def publish(self, event: UserRegisteredEvent) -> None:
+        self.published.append(event)
+
+
 @dataclass
 class LoginScenario:
     service: AuthService
@@ -192,6 +199,7 @@ class LoginScenario:
     hasher: RecordingPasswordHasher
     access_issuer: RecordingAccessTokenIssuer
     refresh_codec: RecordingRefreshTokenCodec
+    event_publisher: FakeEventPublisher
     uow: TrackingUOW
     now: datetime
 
@@ -216,21 +224,7 @@ def create_login_scenario(
     )
     access_issuer = RecordingAccessTokenIssuer()
     refresh_codec = RecordingRefreshTokenCodec()
-    settings = Settings(
-        DATABASE_HOST="localhost",
-        DATABASE_PORT=5432,
-        DATABASE_USER="auth",
-        DATABASE_PASSWORD="auth",
-        DATABASE_NAME="auth",
-        DEV_LOGS=True,
-        JWT_PRIVATE_KEY_PATH=Path("unused-private.pem"),
-        JWT_PUBLIC_KEY_PATH=Path("unused-public.pem"),
-        JWT_ACTIVE_KEY_ID="auth-test",
-        JWT_ISSUER="payflow-auth",
-        JWT_SERVICE_AUDIENCE="auth-service",
-        JWT_AUDIENCES="auth-service",
-        AUTH_SESSION_IDLE_TTL_SECONDS=30 * 24 * 60 * 60,
-    )
+    event_publisher = FakeEventPublisher()
     service = AuthService(
         user_repo=users,
         refresh_token_repo=refresh_tokens,
@@ -240,7 +234,8 @@ def create_login_scenario(
         access_token_issuer=access_issuer,
         access_token_verifier=(access_token_verifier or UnusedAccessTokenVerifier()),
         refresh_token_codec=refresh_codec,
-        settings=settings,
+        event_publisher=event_publisher,
+        session_idle_ttl=timedelta(days=30),
         clock=lambda: now,
     )
     return LoginScenario(
@@ -252,6 +247,7 @@ def create_login_scenario(
         hasher=hasher,
         access_issuer=access_issuer,
         refresh_codec=refresh_codec,
+        event_publisher=event_publisher,
         uow=uow,
         now=now,
     )
