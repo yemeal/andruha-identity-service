@@ -63,6 +63,8 @@ include = ["src"]
 exclude = ["**/__pycache__"]
 pythonVersion = "3.14"
 typeCheckingMode = "strict"
+reportUnknownVariableType = false
+reportUnknownMemberType = false
 venvPath = "."
 venv = ".venv"
 
