@@ -14,7 +14,7 @@ from app.core.settings import get_settings
 from app.infrastructure.database.models import Base
 
 config = context.config
-config.set_main_option("sqlalchemy.url", get_settings().DATABASE_URL)
+config.set_main_option("sqlalchemy.url", get_settings().postgres.DATABASE_URL)
 target_metadata = Base.metadata
 
 

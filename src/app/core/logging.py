@@ -7,34 +7,41 @@ from typing import Any
 
 import structlog
 
-from app.core.settings import Settings, get_settings
+from app.core.settings import AppSettings, Settings, get_settings
 
 EventDict = MutableMapping[str, Any]
 
 
-def _log_level(settings: Settings) -> int:
-    level = logging.getLevelNamesMapping().get(settings.LOG_LEVEL)
+def _log_level(settings: AppSettings | Settings) -> int:
+    app_settings = settings.app if isinstance(settings, Settings) else settings
+    level = logging.getLevelNamesMapping().get(app_settings.LOG_LEVEL)
     if level is None:
-        raise ValueError(f"Unsupported LOG_LEVEL: {settings.LOG_LEVEL}")
+        raise ValueError(f"Unsupported LOG_LEVEL: {app_settings.LOG_LEVEL}")
     return level
 
 
-def _service_context(settings: Settings):
+def _service_context(settings: AppSettings | Settings):
+    app_settings = settings.app if isinstance(settings, Settings) else settings
+
     def add_service_context(
         _logger: object,
         _method_name: str,
         event_dict: EventDict,
     ) -> EventDict:
-        event_dict.setdefault("service", settings.SERVICE_NAME)
-        event_dict.setdefault("version", settings.APP_VERSION)
-        event_dict.setdefault("environment", settings.APP_ENVIRONMENT)
+        event_dict.setdefault("service", app_settings.SERVICE_NAME)
+        event_dict.setdefault("version", app_settings.APP_VERSION)
+        event_dict.setdefault("environment", app_settings.APP_ENVIRONMENT)
         return event_dict
 
     return add_service_context
 
 
-def setup_logging(settings: Settings | None = None) -> None:
-    current_settings = settings or get_settings()
+def setup_logging(settings: AppSettings | Settings | None = None) -> None:
+    current_settings = (
+        settings.app
+        if isinstance(settings, Settings)
+        else (settings or get_settings().app)
+    )
     level = _log_level(current_settings)
 
     shared_processors = [
