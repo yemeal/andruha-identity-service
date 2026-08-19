@@ -87,12 +87,14 @@ class TransactionalRefreshOperation(TransactionalRefreshOperationProtocol):
         issuer: AccessTokenIssuerProtocol,
         codec: OpaqueRefreshTokenCodecProtocol,
         protector: ReplayResultProtectorProtocol,
-        session_idle_ttl: timedelta = timedelta(days=30),
+        session_idle_ttl: timedelta | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._users, self._tokens, self._sessions = users, tokens, sessions
         self._issuer, self._codec, self._protector = issuer, codec, protector
-        self._session_idle_ttl = session_idle_ttl
+        self._session_idle_ttl = (
+            session_idle_ttl if session_idle_ttl is not None else timedelta(days=30)
+        )
         self._clock = clock
 
     async def execute(

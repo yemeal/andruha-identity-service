@@ -91,8 +91,19 @@ def test_read_mute_loggers_trims_and_drops_empty_items(
     assert read_mute_loggers() == ("uvicorn.access", "httpx")
 
 
-def test_app_settings_defaults() -> None:
-    settings = AppSettings()
+def test_app_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "SERVICE_NAME",
+        "APP_VERSION",
+        "APP_ENVIRONMENT",
+        "HOST",
+        "PORT",
+        "DEV_LOGS",
+        "LOG_LEVEL",
+        "MUTE_LOGGERS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    settings = AppSettings(_env_file=None)
     assert settings.SERVICE_NAME == "andruha-identity-service"
     assert settings.APP_VERSION == "0.1.0"
     assert settings.APP_ENVIRONMENT == "development"
@@ -112,8 +123,17 @@ def test_app_settings_validation() -> None:
     assert settings.MUTE_LOGGERS == ("foo", "bar")
 
 
-def test_postgres_settings_defaults_and_url() -> None:
-    settings = PostgresSettings()
+def test_postgres_settings_defaults_and_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "DATABASE_HOST",
+        "DATABASE_PORT",
+        "DATABASE_USER",
+        "DATABASE_PASSWORD",
+        "DATABASE_NAME",
+        "RUN_MIGRATIONS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    settings = PostgresSettings(_env_file=None)
     assert settings.DATABASE_HOST == "identity-postgres"
     assert settings.DATABASE_PORT == 5432
     assert settings.DATABASE_USER == "andruha_identity"
@@ -126,8 +146,15 @@ def test_postgres_settings_defaults_and_url() -> None:
     assert settings.url == settings.DATABASE_URL
 
 
-def test_valkey_settings_defaults_and_url() -> None:
-    settings = ValkeySettings()
+def test_valkey_settings_defaults_and_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "VALKEY_HOST",
+        "VALKEY_PORT",
+        "VALKEY_DB",
+        "VALKEY_KEY_NAMESPACE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    settings = ValkeySettings(_env_file=None)
     assert settings.VALKEY_HOST == "valkey"
     assert settings.VALKEY_PORT == 6379
     assert settings.VALKEY_DB == 0
@@ -144,8 +171,16 @@ def test_valkey_settings_blank_namespace_rejected() -> None:
         ValkeySettings(VALKEY_KEY_NAMESPACE="   ")
 
 
-def test_kafka_settings_defaults() -> None:
-    settings = KafkaSettings()
+def test_kafka_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "KAFKA_BOOTSTRAP_SERVERS",
+        "KAFKA_CLIENT_ID",
+        "KAFKA_USER_REGISTERED_TOPIC",
+        "KAFKA_GROUP_ID",
+        "KAFKA_AUTO_OFFSET_RESET",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    settings = KafkaSettings(_env_file=None)
     assert settings.KAFKA_BOOTSTRAP_SERVERS == "kafka:29092"
     assert settings.bootstrap_servers == "kafka:29092"
     assert settings.KAFKA_CLIENT_ID == "andruha-identity-service"
@@ -161,8 +196,18 @@ def test_kafka_settings_blank_servers_rejected() -> None:
         KafkaSettings(KAFKA_BOOTSTRAP_SERVERS="   ")
 
 
-def test_security_settings_defaults_and_properties() -> None:
-    settings = SecuritySettings()
+def test_security_settings_defaults_and_properties(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for key in (
+        "AUTH_COOKIE_SECURE",
+        "AUTH_COOKIE_SAMESITE",
+        "AUTH_TEST_TOKEN_ENDPOINT_ENABLED",
+        "JWT_ACTIVE_KEY_ID",
+        "JWT_ISSUER",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    settings = SecuritySettings(_env_file=None)
     assert settings.AUTH_COOKIE_SECURE is True
     assert settings.AUTH_COOKIE_SAMESITE == "lax"
     assert settings.AUTH_TEST_TOKEN_ENDPOINT_ENABLED is False

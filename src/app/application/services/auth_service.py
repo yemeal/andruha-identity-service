@@ -94,7 +94,7 @@ class AuthService:
         access_token_verifier: AccessTokenVerifierProtocol,
         refresh_token_codec: OpaqueRefreshTokenCodecProtocol,
         event_publisher: EventPublisherProtocol[UserRegisteredEvent],
-        session_idle_ttl: timedelta = timedelta(days=30),
+        session_idle_ttl: timedelta | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._user_repo = user_repo
@@ -106,7 +106,9 @@ class AuthService:
         self._access_token_verifier = access_token_verifier
         self._refresh_token_codec = refresh_token_codec
         self._event_publisher = event_publisher
-        self._session_idle_ttl = session_idle_ttl
+        self._session_idle_ttl = (
+            session_idle_ttl if session_idle_ttl is not None else timedelta(days=30)
+        )
         self._clock = clock
 
     async def _verify_candidate_password(

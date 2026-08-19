@@ -141,9 +141,9 @@ reportUnknownVariableType = false
 reportUnknownMemberType = false
 reportUnknownArgumentType = false
 reportMissingTypeStubs = false
-reportCallInDefaultInitializer = false
-reportImplicitStringConcatenation = false
-reportUninitializedInstanceVariable = false
+reportCallInDefaultInitializer = true
+reportImplicitStringConcatenation = true
+reportUninitializedInstanceVariable = true
 
 # Full strictness on our codebase
 reportOptionalSubscript = true

@@ -43,14 +43,15 @@ class PyJWTAccessTokenVerifier:
         public_keys: Mapping[str, RSAPublicKey],
         issuer: str,
         audience: str,
-        leeway: timedelta = timedelta(0),
+        leeway: timedelta | None = None,
     ) -> None:
+        effective_leeway = leeway if leeway is not None else timedelta(0)
         normalized_issuer = issuer.strip()
         normalized_audience = audience.strip()
 
         if not normalized_issuer or not normalized_audience:
             raise DomainErrors.Token.INVALID_CONFIGURATION()
-        if leeway < timedelta(0):
+        if effective_leeway < timedelta(0):
             raise DomainErrors.Token.INVALID_CONFIGURATION()
         if not public_keys:
             raise DomainErrors.Token.INVALID_CONFIGURATION()
@@ -71,7 +72,7 @@ class PyJWTAccessTokenVerifier:
         self._public_keys = MappingProxyType(normalized_public_keys)
         self._issuer = normalized_issuer
         self._audience = normalized_audience
-        self._leeway = leeway
+        self._leeway = effective_leeway
 
     def verify(self, token: str) -> AccessTokenClaims:
         """

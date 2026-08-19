@@ -172,7 +172,7 @@ class CircuitBreaker:
                 time_left = self._recovery_timeout - (time.monotonic() - opened_at)
                 raise CircuitBreakerError(
                     f'Circuit Breaker "{self.name}" открыт. '
-                    f"Осталось {max(time_left, 0):.1f} секунд"
+                    + f"Осталось {max(time_left, 0):.1f} секунд"
                 )
             if self._state is CircuitState.HALF_OPEN:
                 if self._probe_in_progress:

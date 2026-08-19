@@ -19,32 +19,32 @@ class OutboxMessageORM(Base, UuidMixin, TimestampMixin):
     type: Mapped[str] = mapped_column(String(100))
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
     status: Mapped[OutboxStatus] = mapped_column(SAEnum(OutboxStatus))
-    attempts: Mapped[int]
+    attempts: Mapped[int] = mapped_column()
     last_error_class: Mapped[str | None] = mapped_column(String(255))
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     claim_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     terminal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    redrive_count: Mapped[int]
+    redrive_count: Mapped[int] = mapped_column()
 
     __table_args__ = (
         CheckConstraint(
-            "("
-            "status = 'PENDING' "
-            "AND claim_token IS NULL "
-            "AND claim_expires_at IS NULL "
-            "AND terminal_at IS NULL"
-            ") OR ("
-            "status = 'CLAIMED' "
-            "AND claim_token IS NOT NULL "
-            "AND claim_expires_at IS NOT NULL "
-            "AND terminal_at IS NULL"
-            ") OR ("
-            "status IN ('SUCCESS', 'QUARANTINED') "
-            "AND claim_token IS NULL "
-            "AND claim_expires_at IS NULL "
-            "AND terminal_at IS NOT NULL"
-            ")",
+            """(
+                status = 'PENDING'
+                AND claim_token IS NULL
+                AND claim_expires_at IS NULL
+                AND terminal_at IS NULL
+            ) OR (
+                status = 'CLAIMED'
+                AND claim_token IS NOT NULL
+                AND claim_expires_at IS NOT NULL
+                AND terminal_at IS NULL
+            ) OR (
+                status IN ('SUCCESS', 'QUARANTINED')
+                AND claim_token IS NULL
+                AND claim_expires_at IS NULL
+                AND terminal_at IS NOT NULL
+            )""",
             name="ck_outbox_lifecycle",
         ),
         CheckConstraint(

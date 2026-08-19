@@ -25,7 +25,7 @@ def hash_idempotency_key(raw_key: str) -> bytes:
 def compute_request_hash(
     payload: Mapping[str, Any] | BaseModel,
     *,
-    unordered_paths: Set[JsonPath] = frozenset(),
+    unordered_paths: Set[JsonPath] | None = None,
 ) -> bytes:
     """
     Строит SHA-256 из семантического application payload.
@@ -33,10 +33,11 @@ def compute_request_hash(
     Нейтральное ядро не знает, какие списки являются множествами. Order use case
     явно передаёт {("lines",)}, остальные последовательности сохраняют порядок.
     """
+    effective_paths = unordered_paths if unordered_paths is not None else frozenset()
     raw = (
         payload.model_dump(mode="python") if isinstance(payload, BaseModel) else payload
     )
-    canonical = _canonicalize(raw, path=(), unordered_paths=unordered_paths)
+    canonical = _canonicalize(raw, path=(), unordered_paths=effective_paths)
     encoded = json.dumps(
         canonical,
         ensure_ascii=False,
