@@ -3,6 +3,9 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.ports.repositories.auth_sessions import (
+    AuthSessionRepositoryProtocol,
+)
 from app.domain.auth_sessions import AuthSession
 from app.infrastructure.database.models import AuthSessionORM
 from app.infrastructure.database.repositories.base_repository import (
@@ -10,7 +13,10 @@ from app.infrastructure.database.repositories.base_repository import (
 )
 
 
-class AuthSessionRepository(SQLAlchemyAsyncRepository[AuthSession, AuthSessionORM]):
+class AuthSessionRepository(
+    SQLAlchemyAsyncRepository[AuthSession, AuthSessionORM],
+    AuthSessionRepositoryProtocol,
+):
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session, AuthSession, AuthSessionORM)
 

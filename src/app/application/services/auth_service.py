@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from structlog.typing import FilteringBoundLogger
 
 from app.application.ports.dto import AccessPrincipal
+from app.application.ports.events import EventPublisherProtocol, UserRegisteredEvent
 from app.application.ports.repositories import (
     AuthSessionRepositoryProtocol,
     RefreshTokenRepositoryProtocol,
@@ -21,7 +22,6 @@ from app.application.ports.security import (
     PasswordHasherProtocol,
 )
 from app.application.ports.uow import AsyncUOWProtocol
-from app.core.settings import Settings
 from app.domain.auth_sessions import AuthSession
 from app.domain.base import utc_now
 from app.domain.exceptions import (
@@ -93,7 +93,8 @@ class AuthService:
         access_token_issuer: AccessTokenIssuerProtocol,
         access_token_verifier: AccessTokenVerifierProtocol,
         refresh_token_codec: OpaqueRefreshTokenCodecProtocol,
-        settings: Settings,
+        event_publisher: EventPublisherProtocol[UserRegisteredEvent],
+        session_idle_ttl: timedelta = timedelta(days=30),
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._user_repo = user_repo
@@ -104,7 +105,8 @@ class AuthService:
         self._access_token_issuer = access_token_issuer
         self._access_token_verifier = access_token_verifier
         self._refresh_token_codec = refresh_token_codec
-        self._settings = settings
+        self._event_publisher = event_publisher
+        self._session_idle_ttl = session_idle_ttl
         self._clock = clock
 
     async def _verify_candidate_password(
@@ -246,6 +248,11 @@ class AuthService:
                 if created_user is None:
                     register_log.info("user registration conflict")
                     raise DomainErrors.User.EMAIL_ALREADY_EXISTS()
+                event = UserRegisteredEvent(
+                    user_id=created_user.id,
+                    registered_at=created_user.created_at,
+                )
+                await self._event_publisher.publish(event)
 
             register_log.info("user successfully created")
             return created_user
@@ -308,9 +315,7 @@ class AuthService:
                 issued_tokens = self._issue_tokens(locked_user, now, login_log)
 
                 stage = "auth session storage"
-                idle_expires_at = now + timedelta(
-                    seconds=self._settings.AUTH_SESSION_IDLE_TTL_SECONDS
-                )
+                idle_expires_at = now + self._session_idle_ttl
                 created_auth_session = await self._auth_session_repo.create(
                     AuthSession(
                         user_id=locked_user.id,
