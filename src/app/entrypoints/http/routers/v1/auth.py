@@ -19,8 +19,8 @@ from app.application.exceptions.idempotency import (
 )
 from app.application.services.auth_service import AuthServiceProtocol, TokenPair
 from app.application.services.idempotency_fingerprint import hash_idempotency_key
-from app.application.services.refresh import RefreshUseCase
-from app.core.settings import Settings
+from app.application.services.refresh import RefreshUseCaseProtocol
+from app.core.settings import SecuritySettings
 from app.domain.exceptions import (
     DomainErrors,
     InvalidCredentialsError,
@@ -76,7 +76,7 @@ def _set_no_store_headers(response: Response) -> None:
 def _set_tokens_cookies(
     response: Response,
     pair: TokenPair,
-    settings: Settings,
+    settings: SecuritySettings,
 ) -> None:
     response.set_cookie(
         key="access_token",
@@ -99,7 +99,7 @@ def _set_tokens_cookies(
     _set_no_store_headers(response)
 
 
-def _delete_auth_cookies(response: Response, settings: Settings) -> None:
+def _delete_auth_cookies(response: Response, settings: SecuritySettings) -> None:
     response.delete_cookie(
         key="access_token",
         path="/",
@@ -170,7 +170,7 @@ def create_auth_router(
     async def login(  # pyright: ignore[reportUnusedFunction]
         payload: LoginRequest,
         auth_service: FromDishka[AuthServiceProtocol],
-        settings: FromDishka[Settings],
+        settings: FromDishka[SecuritySettings],
     ) -> Response:
         pair = await auth_service.login(email=payload.email, password=payload.password)
 
@@ -239,8 +239,8 @@ def create_auth_router(
                 max_length=128,
             ),
         ],
-        refresh_use_case: FromDishka[RefreshUseCase],
-        settings: FromDishka[Settings],
+        refresh_use_case: FromDishka[RefreshUseCaseProtocol],
+        settings: FromDishka[SecuritySettings],
     ) -> Response:
         """
         HTTP-граница делает одноразовую rotation безопасной для сетевых ретраев.
@@ -276,7 +276,7 @@ def create_auth_router(
     @inject
     async def logout(  # pyright: ignore[reportUnusedFunction]
         auth_service: FromDishka[AuthServiceProtocol],
-        settings: FromDishka[Settings],
+        settings: FromDishka[SecuritySettings],
         refresh_token: Annotated[
             str | None,
             Cookie(alias="refresh_token"),

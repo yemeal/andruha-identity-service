@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.ports.repositories.users import UserRepositoryProtocol
 from app.domain.users import User
 from app.domain.value_objects.email import NormalizedEmail
 from app.infrastructure.database.models.users import UserORM
@@ -12,7 +13,10 @@ from app.infrastructure.database.repositories.base_repository import (
 )
 
 
-class UserRepository(SQLAlchemyAsyncRepository[User, UserORM]):
+class UserRepository(
+    SQLAlchemyAsyncRepository[User, UserORM],
+    UserRepositoryProtocol,
+):
     """Специализированный репозиторий для User"""
 
     def __init__(self, session: AsyncSession) -> None:

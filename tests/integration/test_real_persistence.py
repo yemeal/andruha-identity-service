@@ -82,6 +82,7 @@ async def test_alembic_schema_matches_final_orm_metadata() -> None:
             "auth_sessions",
             "refresh_tokens",
             "idempotency_records",
+            "outbox",
         }
     finally:
         await engine.dispose()

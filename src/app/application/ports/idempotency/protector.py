@@ -1,0 +1,6 @@
+from typing import Any, Protocol
+
+
+class ReplayResultProtectorProtocol(Protocol):
+    def protect(self, payload: dict[str, str], *, aad: bytes) -> dict[str, Any]: ...
+    def restore(self, envelope: dict[str, Any], *, aad: bytes) -> dict[str, str]: ...

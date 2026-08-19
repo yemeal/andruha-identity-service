@@ -21,9 +21,7 @@ async def check_postgres(engine: AsyncEngine) -> bool:
 
 async def check_valkey(client: Redis) -> bool:
     try:
-        return bool(
-            await client.ping()  # pyright: ignore[reportUnknownMemberType]
-        )
+        return bool(await client.ping())
     except Exception:
         return False
 
@@ -33,6 +31,14 @@ async def live() -> dict[str, str]:
     return {"status": "ok"}
 
 
+# TODO (Issue 9): Устранить утечку инфраструктурных драйверов в Presentation Layer.
+# Сейчас HTTP-роутер напрямую зависит от драйверов (AsyncEngine, Redis) и сам
+# выполняет низкоуровневые запросы ('SELECT 1' и 'client.ping()').
+# Рекомендуемый рефакторинг:
+# 1. Создать порт в application/ports/health.py (HealthCheckProtocol).
+# 2. Создать адаптер в infrastructure/observability/health_checker.py.
+# 3. Зарегистрировать провайдер HealthCheckProvider в DI (Dishka).
+# 4. Инжектить FromDishka[HealthCheckProtocol] в эндпоинт /health/ready вместо AsyncEngine и Redis.
 @router.get("/ready")
 @inject
 async def ready(

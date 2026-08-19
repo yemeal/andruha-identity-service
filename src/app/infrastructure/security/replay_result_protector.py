@@ -12,6 +12,39 @@ _PAYLOAD_ADAPTER = TypeAdapter(dict[str, str])
 
 
 class AESGCMReplayResultProtector:
+    """
+    -   Специализированный шифратор/дешифратор (AEAD envelope cipher)
+        для результатов идемпотентного выполнения (replay results).
+        Шифрует пару токенов (access + refresh) алгоритмом AES-256-GCM с AAD перед
+        сохранением в таблицу idempotency_records, предотвращая хранение токенов
+        в открытом виде в БД при сетевых ретраях ротации.
+
+    -   При повторном запросе достаёт шифротекст из БД, проверяет активность сессии
+        и расшифровывает пару токенов ключом из RAM.
+
+    -   Если данные в БД изменены или подставлен чужой Idempotency-Key,
+        проверка тега подлинности сразу падает с InvalidTag.
+
+    -   Хранит набор ключей key_id -> key,
+        что позволяет обновлять мастер-ключ без поломки ранее зашифрованных записей.
+
+    -   Вместо опасного открытого JSON:
+        {
+          "access_token": "<jwt-access-token>",
+          "refresh_token": "<opaque-refresh-token>"
+        }
+        В колонку result_payload таблицы idempotency_records ложится зашифрованный конверт:
+        {
+          "version": 1,
+          "algorithm": "AES-256-GCM",
+          "key_id": "replay-v1",
+          "nonce": "4bX7uQ1...==",
+          "ciphertext": "8zK9pL2vN...=="
+        }
+
+
+    """
+
     def __init__(self, *, active_key_id: str, keys: dict[str, bytes]) -> None:
         if active_key_id not in keys or any(len(key) != 32 for key in keys.values()):
             raise ValueError("replay encryption key ring is invalid")
@@ -19,6 +52,8 @@ class AESGCMReplayResultProtector:
         self._keys = keys
 
     def protect(self, payload: dict[str, str], *, aad: bytes) -> dict[str, Any]:
+        # nonce (Number used ONCE) - 96-битный одноразовый вектор инициализации (IV) для AES-GCM;
+        # гарантирует уникальность шифротекста и защищает от катастрофы повтора (Nonce Reuse).
         nonce = os.urandom(12)
         plaintext = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         ciphertext = AESGCM(self._keys[self._active_key_id]).encrypt(

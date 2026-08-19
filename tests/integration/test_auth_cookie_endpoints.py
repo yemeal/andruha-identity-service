@@ -21,8 +21,8 @@ from app.application.services.auth_service import (
     TokenPair,
 )
 from app.application.services.idempotency_fingerprint import hash_idempotency_key
-from app.application.services.refresh import RefreshUseCase
-from app.core.settings import Settings
+from app.application.services.refresh import RefreshUseCaseProtocol
+from app.core.settings import SecuritySettings, Settings
 from app.domain.exceptions import (
     DomainErrors,
     InvalidTokenConfigurationError,
@@ -46,12 +46,16 @@ class _AuthEndpointProvider(Provider):
         return self._auth_service
 
     @provide(scope=Scope.REQUEST)
-    def get_refresh_use_case(self) -> RefreshUseCase:
+    def get_refresh_use_case(self) -> RefreshUseCaseProtocol:
         return self._refresh_use_case
 
     @provide(scope=Scope.APP)
     def get_settings(self) -> Settings:
         return self._settings
+
+    @provide(scope=Scope.APP)
+    def get_security_settings(self) -> SecuritySettings:
+        return getattr(self._settings, "security", self._settings)
 
 
 @asynccontextmanager
@@ -60,7 +64,7 @@ async def _auth_http_context(
     include_test_token_endpoint: bool,
 ):
     auth_service = AsyncMock(spec=AuthServiceProtocol)
-    refresh_use_case = AsyncMock(spec=RefreshUseCase)
+    refresh_use_case = AsyncMock(spec=RefreshUseCaseProtocol)
     settings = cast(
         Settings,
         SimpleNamespace(

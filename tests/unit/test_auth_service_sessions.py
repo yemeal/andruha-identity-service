@@ -6,7 +6,6 @@ from contextvars import ContextVar
 from contextvars import Token as ContextToken
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from types import TracebackType
 from uuid import UUID
 
@@ -20,6 +19,7 @@ from app.application.ports.dto.security import (
     AccessTokenClaims,
     IssuedRefreshToken,
 )
+from app.application.ports.events import UserRegisteredEvent
 from app.application.services.auth_service import AuthService, TokenPair
 from app.application.services.idempotency_fingerprint import (
     compute_request_hash,
@@ -34,7 +34,6 @@ from app.application.services.refresh import (
     replay_aad,
 )
 from app.application.value_objects.idempotency import IdempotencyIdentity
-from app.core.settings import Settings
 from app.domain.auth_sessions import AuthSession
 from app.domain.exceptions import (
     AuthSessionInactiveError,
@@ -348,6 +347,14 @@ class SessionScenario:
         return TokenPair.model_validate(payload)
 
 
+class FakeEventPublisher:
+    def __init__(self) -> None:
+        self.published: list[UserRegisteredEvent] = []
+
+    async def publish(self, event: UserRegisteredEvent) -> None:
+        self.published.append(event)
+
+
 def create_scenario(
     *,
     expired: bool = False,
@@ -382,24 +389,10 @@ def create_scenario(
     sessions = InMemoryAuthSessionRepository(state)
     users = InMemoryUserRepository(user)
     access_issuer = FakeAccessTokenIssuer()
-    settings = Settings(
-        DATABASE_HOST="localhost",
-        DATABASE_PORT=5432,
-        DATABASE_USER="auth",
-        DATABASE_PASSWORD="auth",
-        DATABASE_NAME="auth",
-        DEV_LOGS=True,
-        JWT_PRIVATE_KEY_PATH=Path("unused-private.pem"),
-        JWT_PUBLIC_KEY_PATH=Path("unused-public.pem"),
-        JWT_ACTIVE_KEY_ID="auth-test",
-        JWT_ISSUER="payflow-auth",
-        JWT_SERVICE_AUDIENCE="auth-service",
-        JWT_AUDIENCES="auth-service",
-        AUTH_SESSION_IDLE_TTL_SECONDS=int(idle_ttl.total_seconds()),
-    )
     clock = FrozenClock(now)
     uow = InMemoryAuthUOW(state)
     protector = PassthroughReplayProtector()
+    event_publisher = FakeEventPublisher()
     operation = TransactionalRefreshOperation(
         users,
         refresh_tokens,
@@ -407,7 +400,7 @@ def create_scenario(
         access_issuer,
         codec,
         protector,
-        settings,
+        session_idle_ttl=idle_ttl,
         clock=clock.now,
     )
     service = AuthService(
@@ -419,7 +412,8 @@ def create_scenario(
         access_token_issuer=access_issuer,
         access_token_verifier=UnusedAccessTokenVerifier(),
         refresh_token_codec=codec,
-        settings=settings,
+        event_publisher=event_publisher,
+        session_idle_ttl=idle_ttl,
         clock=clock.now,
     )
 

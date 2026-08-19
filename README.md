@@ -1,13 +1,23 @@
 # Andruha Identity Service
 
 Identity owns credentials, account authentication state, authentication sessions,
-and refresh-token rotation. It does not own editable profiles, messages, media,
-realtime delivery, or gateway authorization policy.
+refresh-token rotation, and reliable publishing of identity lifecycle events (such as user registration) via Transactional Outbox. It does not own editable profiles, messages, media, realtime delivery, or gateway authorization policy.
 
-The service uses FastAPI with hexagonal boundaries:
-`entrypoints -> application -> domain`; infrastructure implements application
-ports. PostgreSQL is the durable source of truth. Valkey is an optional hot path
-for refresh idempotency and may be unavailable without making refresh unsafe.
+The service uses FastAPI and FastStream with strict hexagonal boundaries:
+`entrypoints -> application -> domain`; infrastructure implements application ports. PostgreSQL is the durable source of truth. Valkey is an optional hot path for refresh idempotency and may be unavailable without making refresh unsafe.
+
+---
+
+## Architecture and Entrypoints
+
+The service provides two independent entrypoint processes built from the same codebase:
+
+1. **HTTP API (`app.entrypoints.http.main:create_app`)**:
+   Serves authentication and session management endpoints behind the API Gateway.
+2. **Outbox Relay Worker (`app.entrypoints.messaging.relay:main`)**:
+   Independent background process polling PostgreSQL outbox table using non-blocking leases (`FOR UPDATE SKIP LOCKED`), publishing integration events to Apache Kafka outside database transactions, handling exponential backoff, dead-letter quarantine, and graceful shutdown on `SIGINT`/`SIGTERM`.
+
+---
 
 ## HTTP API
 
@@ -15,48 +25,55 @@ All business routes are under `/api/v1/auth`:
 
 | Method | Path | Result |
 |---|---|---|
-| `POST` | `/register` | Create an account (`201`) |
-| `POST` | `/login` | Set access and refresh cookies (`204`) |
+| `POST` | `/register` | Create an account and atomically persist outbox event (`201`) |
+| `POST` | `/login` | Set access and refresh HttpOnly cookies (`204`) |
 | `POST` | `/refresh` | Rotate cookies idempotently (`204`) |
 | `POST` | `/logout` | Revoke the session and delete cookies (`204`) |
-| `GET` | `/me` | Resolve the current identity from a trusted bearer token |
+| `GET` | `/me` | Resolve current identity from trusted internal Bearer token |
 | `POST` | `/login/test` | Return tokens for non-production integration tests only |
 
-Refresh requires an `Idempotency-Key` header of 8-128 characters. The same key
-and refresh token replays the committed replacement pair. Reusing a key for a
-different token returns `409`; an active winner returns `423` with `Retry-After`;
-loss of required replay safety returns `503`. Auth responses use stable error
-codes and `Cache-Control: no-store`.
+Refresh requires an `Idempotency-Key` header (8–128 chars). Reusing a key for the same token replays the committed token pair. Reusing a key for a different token returns `409 Conflict`; concurrent winner execution returns `423 Locked` with `Retry-After`; loss of required replay safety returns `503 Service Unavailable`.
 
-Operational endpoints are `GET /health/live`, `GET /health/ready`, and
-`GET /metrics`. PostgreSQL failure makes readiness `503`. Valkey failure is
-reported as degraded while readiness remains `200` when PostgreSQL is healthy.
+Operational endpoints are `GET /health/live`, `GET /health/ready`, and `GET /metrics`.
 
-## Durable refresh and replay security
+---
 
-Refresh-token consumption, replacement-token creation, session idle extension
-or revocation, and insertion of the durable idempotency result commit in one
-PostgreSQL unit of work. A unique fence on
-`(subject_id, operation, key_hash)` selects the concurrent winner.
+## Transactional Outbox & Messaging
 
-Raw idempotency keys and raw tokens are never persisted. The durable and Valkey
-success result is an AES-256-GCM envelope with a fresh 96-bit nonce, key ID, and
-authenticated context binding the identity, operation, hashes, and result
-version. Replay also checks that the referenced replacement refresh token still
-exists, is unused, and belongs to an active session. Stale replay returns a safe
-authentication failure and clears auth cookies.
+User registration publishes integration event `identity.user_registered.v1` (defined in root contracts `contracts/identity/events/user-registered.v1.schema.json`):
 
-## Configuration and keys
+* **Atomic Dual-Write**: The new `User` record and the `OutboxMessage` row are inserted inside the exact same PostgreSQL database transaction.
+* **Lease-based Concurrency**: The relay worker claims batches using atomic CTE leases with `FOR UPDATE SKIP LOCKED`.
+* **Partitioned Concurrency with Strict FIFO**: Messages are grouped by partition key (`user_id`). Disjoint keys publish concurrently via `asyncio.gather`, while messages with identical keys execute in strict FIFO sequence.
+* **Transient & Permanent Failure Handling**:
+  * Network timeouts / Kafka broker disconnections trigger exponential backoff with full jitter and reschedule `available_at`.
+  * Malformed payloads or schema violations are immediately moved to `QUARANTINED` status without blocking healthy partitions.
+* **Lease Recovery**: If a relay worker crashes midway, its expired lease is safely recovered by another worker once `claim_expires_at` passes.
 
-See `.env.example` for all non-secret settings. Important groups are:
+---
 
-- `DATABASE_*`, `RUN_MIGRATIONS`;
-- `VALKEY_*`, `IDEMPOTENCY_*`;
-- `JWT_*`, access/session TTLs, and cookie policy;
-- `REPLAY_ENCRYPTION_ACTIVE_KEY_ID` and `REPLAY_ENCRYPTION_KEY_PATHS`.
+## Durable Refresh and Replay Security
 
-JWT and replay keys are files, not environment values. For local root Compose,
-create ignored files under `C:\Projects\Andruha\.secrets\identity`:
+Refresh-token consumption, replacement-token creation, session idle extension or revocation, and insertion of the durable idempotency result commit in one PostgreSQL unit of work. A unique fence on `(subject_id, operation, key_hash)` selects the concurrent winner.
+
+Raw idempotency keys and raw tokens are never persisted. The durable and Valkey success result is an AES-256-GCM envelope with a fresh 96-bit nonce, key ID, and authenticated context binding identity, operation, hashes, and result version. Stale replay returns a safe authentication failure and clears auth cookies.
+
+---
+
+## Configuration and Keys
+
+Configuration is loaded into strongly-typed Pydantic settings models (`AppSettings`, `PostgresSettings`, `ValkeySettings`, `KafkaSettings`, `OutboxSettings`, `SecuritySettings`, `LoggingSettings`).
+
+See `.env.example` for non-secret configuration. Key settings include:
+
+* `DATABASE_*`, `RUN_MIGRATIONS`
+* `VALKEY_*`, `IDEMPOTENCY_*`
+* `KAFKA_*` (bootstrap servers, client ID, acks)
+* `OUTBOX_*` (poll interval, batch size, claim lease, backoff multiplier/jitter, shutdown timeout)
+* `JWT_*` (issuer, audiences, key paths, TTLs, clock skew)
+* `REPLAY_ENCRYPTION_ACTIVE_KEY_ID` and `REPLAY_ENCRYPTION_KEY_PATHS`
+
+JWT RSA keys and AES-GCM replay keys are read from secret files:
 
 ```powershell
 New-Item -ItemType Directory -Force C:\Projects\Andruha\.secrets\identity
@@ -65,56 +82,42 @@ openssl rsa -pubout -in C:\Projects\Andruha\.secrets\identity\jwt-private.pem -o
 openssl rand -out C:\Projects\Andruha\.secrets\identity\replay-v1.key 32
 ```
 
-Startup fails closed when an RSA key is invalid, the replay active key is absent,
-or a replay key is not exactly 32 bytes. Rotation is supported by listing old
-decrypt-only replay keys in `REPLAY_ENCRYPTION_KEY_PATHS` while selecting one
-active encrypt key.
+---
 
-## Database migrations
+## Database Migrations
 
-This greenfield repository has one baseline Alembic revision creating `users`,
-`auth_sessions`, `refresh_tokens`, and `idempotency_records`:
+Alembic manages all schema migrations for the durable PostgreSQL store:
+
+* `users`: Credentials, salt, roles, registration timestamp.
+* `auth_sessions`: Active and revoked authentication sessions.
+* `refresh_tokens`: Rotated cryptographically hashed tokens.
+* `idempotency_records`: Encrypted replay results and concurrency fences.
+* `outbox`: Transactional outbox buffer with dispatch indexes and lifecycle constraints.
 
 ```powershell
 poetry run alembic upgrade head
 poetry run alembic downgrade base
 ```
 
-The container entrypoint runs `alembic upgrade head` when
-`RUN_MIGRATIONS=true`. Retention is controlled by
-`IDEMPOTENCY_RESULT_TTL_SECONDS`; repository cleanup is bounded and uses
-`SKIP LOCKED`.
+---
 
-## Local verification
+## Verification & Testing
 
-Python 3.14 is required.
+The service is fully covered with both unit and end-to-end integration tests against real PostgreSQL and Valkey Testcontainers:
 
 ```powershell
 poetry sync --with dev --no-root
 poetry run ruff check .
 poetry run ruff format --check .
-pyright
-poetry run pytest tests/unit
-poetry run pytest tests/integration
-poetry run coverage report --show-missing --fail-under=80
+poetry run pytest tests/unit            # 274 unit tests
+poetry run pytest tests/integration     # 100 integration tests (Postgres + Valkey)
 poetry run pip-audit
 docker build --target runtime --tag andruha/identity-service:local .
 ```
 
-The integration suite uses real PostgreSQL and Valkey. It connects to
-`IDENTITY_TEST_DATABASE_URL` / `IDENTITY_TEST_VALKEY_URL` when supplied (as in
-CI), otherwise it starts disposable Testcontainers automatically. The detailed
-scenario map is in `tests/integration/README.md`.
-
-From `C:\Projects\Andruha`, validate and start the routed stack with:
+To run the entire local stack (API Gateway, Identity Service, Identity Relay, PostgreSQL, Valkey, Kafka) from root:
 
 ```powershell
 docker compose config --quiet
-docker compose up -d --build identity-postgres valkey identity-service api-gateway
+docker compose up -d --build identity-postgres valkey kafka identity-service identity-relay api-gateway
 ```
-
-The architecture and threat-model decision is documented in
-`docs/identity-idempotency-architecture.md` in the superproject. Cassandra
-sessions/idempotency, Kafka/outbox/profile provisioning, JWT session-version
-claims, registration idempotency, abuse controls, and session-management APIs
-remain explicitly future work.

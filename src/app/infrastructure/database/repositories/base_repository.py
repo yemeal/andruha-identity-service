@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
-class SQLAlchemyAsyncRepository[DomainModelT: BaseModel, ORMModelT]:
+class SQLAlchemyAsyncRepository[DomainModelT: BaseModel, ORMModelT, DomainIdT = UUID]:
     def __init__(
         self,
         session: AsyncSession,
@@ -17,13 +17,16 @@ class SQLAlchemyAsyncRepository[DomainModelT: BaseModel, ORMModelT]:
         self._domain_model = domain_model
         self._orm_model = orm_model
 
+    def _to_domain(self, orm_model: ORMModelT) -> DomainModelT:
+        return self._domain_model.model_validate(orm_model, from_attributes=True)
+
     async def create(self, entity: DomainModelT) -> DomainModelT:
         orm_model = self._orm_model(**entity.model_dump())
         self._session.add(orm_model)
         await self._session.flush()
         return self._domain_model.model_validate(orm_model, from_attributes=True)
 
-    async def get(self, entity_id: UUID) -> DomainModelT | None:
+    async def get(self, entity_id: DomainIdT) -> DomainModelT | None:
         orm_model = await self._session.get(entity=self._orm_model, ident=entity_id)
         if not orm_model:
             return None

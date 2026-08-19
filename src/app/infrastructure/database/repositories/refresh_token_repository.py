@@ -1,6 +1,9 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.ports.repositories.refresh_tokens import (
+    RefreshTokenRepositoryProtocol,
+)
 from app.domain.refresh_tokens import RefreshToken
 from app.infrastructure.database.models.refresh_tokens import RefreshTokenORM
 from app.infrastructure.database.repositories.base_repository import (
@@ -8,7 +11,10 @@ from app.infrastructure.database.repositories.base_repository import (
 )
 
 
-class RefreshTokenRepository(SQLAlchemyAsyncRepository[RefreshToken, RefreshTokenORM]):
+class RefreshTokenRepository(
+    SQLAlchemyAsyncRepository[RefreshToken, RefreshTokenORM],
+    RefreshTokenRepositoryProtocol,
+):
     """Специализированный репозиторий для RefreshToken"""
 
     def __init__(self, session: AsyncSession) -> None:

@@ -19,9 +19,14 @@ dependencies = [
     "cryptography (>=50.0.0,<51.0.0)",
     "pwdlib[argon2] (>=0.2.1,<0.3.0)",
     "prometheus-client (>=0.23.0,<1.0.0)",
-    "redis[hiredis] (>=8.0.0,<9.0.0)"
+    "redis[hiredis] (>=8.0.0,<9.0.0)",
+    "faststream[kafka] (>=0.7.4,<0.8.0)",
+    "httpx2 (==2.12.0)"
 ]
 
+
+[tool.poetry]
+packages = [{include = "app", from = "src"}]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
@@ -39,30 +44,156 @@ dev = [
     "testcontainers[postgres,redis] (>=4.9.0,<5.0.0)"
 ]
 
+# ============================================================
+# RUFF CONFIGURATION
+# ============================================================
 [tool.ruff]
 target-version = "py314"
 line-length = 88
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "I", "B", "SIM", "UP", "RUF"]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "I",      # isort
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "T20",    # flake8-print
+    "SIM",    # flake8-simplify
+    "RUF",    # Ruff-specific rules
+    "ASYNC",  # flake8-async
+    "S",      # flake8-bandit
+    "PTH",    # flake8-use-pathlib
+    "ERA",    # eradicate
+    "PL",     # pylint
+    "PERF",   # perflint
+    "ARG",    # flake8-unused-arguments
+    "RET",    # flake8-return
+]
+ignore = [
+    "E501",    # line length handled by formatter
+    "S104",    # possible binding to all interfaces (0.0.0.0)
+    "S105",    # false positive on TOKEN_TYPE="at+jwt"
+    "S311",    # standard pseudo-random for jitter
+    "S603",    # subprocess without shell=True
+    "S607",    # partial executable path
+    "RUF001",  # ambiguous unicode in docstrings
+    "RUF002",
+    "RUF003",
+    "PLR0911", # too many return statements
+    "PLR0912", # too many branches
+    "PLR0913", # too many arguments in functions
+    "PLR0915", # too many statements
+    "PLR0917", # too many positional arguments
+    "PLR2004", # magic value comparisons
+]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["RUF002", "RUF003"]
+"__init__.py" = ["F401"]
+"tests/**/*.py" = [
+    "S101",
+    "S104",
+    "S105",
+    "S106",
+    "S107",
+    "PLR2004",
+    "PLR0912",
+    "PLR0915",
+    "PLC0415",
+    "ARG",
+    "I",
+    "PTH",
+    "ASYNC",
+    "C4",
+]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+force-sort-within-sections = true
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
 line-ending = "lf"
 
+# ============================================================
+# PYRIGHT CONFIGURATION — STRICTNESS LEVEL 2
+# ============================================================
 [tool.pyright]
 include = ["src"]
-exclude = ["**/__pycache__"]
+exclude = [
+    "**/__pycache__",
+    "**/node_modules",
+    ".git",
+    ".mypy_cache",
+    ".pyright_cache",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".venv",
+]
 pythonVersion = "3.14"
 typeCheckingMode = "strict"
+
+# Strictness Level 2 (relaxed for third-party dynamic DI & stubs)
+reportUnknownVariableType = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportMissingTypeStubs = false
+reportCallInDefaultInitializer = true
+reportImplicitStringConcatenation = true
+reportUninitializedInstanceVariable = true
+
+# Full strictness on our codebase
+reportOptionalSubscript = true
+reportOptionalMemberAccess = true
+reportOptionalCall = true
+reportOptionalIterable = true
+reportOptionalContextManager = true
+reportOptionalOperand = true
+
+reportMissingParameterType = true
+reportMissingTypeArgument = true
+reportUnknownParameterType = true
+reportUnknownLambdaType = true
+reportUntypedFunctionDecorator = true
+reportUntypedClassDecorator = true
+reportUntypedBaseClass = true
+reportUntypedNamedTuple = true
+
+reportIncompatibleMethodOverride = true
+reportIncompatibleVariableOverride = true
+reportInconsistentConstructor = true
+reportOverlappingOverload = true
+
+reportPrivateUsage = true
+reportConstantRedefinition = true
+reportInvalidStubStatement = true
+reportIncompleteStub = true
+reportUnsupportedDunderAll = true
+reportUnusedClass = "error"
+reportUnusedFunction = "error"
+reportUnusedVariable = "error"
+reportUnusedImport = "error"
+reportDuplicateImport = "error"
+
+reportUnnecessaryIsInstance = "error"
+reportUnnecessaryCast = "error"
+reportUnnecessaryComparison = "error"
+reportUnnecessaryContains = "error"
+reportUnnecessaryTypeIgnoreComment = "error"
+
+reportGeneralTypeIssues = true
+reportPropertyTypeMismatch = true
+reportFunctionMemberAccess = true
+
 venvPath = "."
 venv = ".venv"
 
+# ============================================================
+# PYTEST CONFIGURATION
+# ============================================================
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
@@ -74,6 +205,9 @@ markers = [
     "failure_path: dependency or transaction failure integration test",
 ]
 
+# ============================================================
+# COVERAGE CONFIGURATION
+# ============================================================
 [tool.coverage.run]
 branch = true
 source = ["app"]

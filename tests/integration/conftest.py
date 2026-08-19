@@ -124,7 +124,7 @@ def identity_infrastructure(
             postgres = stack.enter_context(
                 PostgresContainer(
                     "postgres:18-alpine",
-                    user="andruha_identity",
+                    username="andruha_identity",
                     password="identity-test-only",
                     dbname="andruha_identity_test",
                     driver="asyncpg",
@@ -164,8 +164,8 @@ def identity_infrastructure(
         try:
             _upgrade_database()
             yield IdentityInfrastructure(
-                database_url=get_settings().DATABASE_URL,
-                valkey_url=get_settings().VALKEY_URL,
+                database_url=get_settings().postgres.DATABASE_URL,
+                valkey_url=get_settings().valkey.VALKEY_URL,
                 jwt_private_key_path=keys[0],
                 jwt_public_key_path=keys[1],
                 replay_key_path=keys[2],
@@ -183,7 +183,7 @@ async def _truncate_state(infrastructure: IdentityInfrastructure) -> None:
             await connection.execute(
                 text(
                     "TRUNCATE TABLE idempotency_records, refresh_tokens, "
-                    "auth_sessions, users CASCADE"
+                    "auth_sessions, users, outbox CASCADE"
                 )
             )
         await valkey.flushdb()
@@ -211,6 +211,18 @@ def identity_client(
     with TestClient(create_app(), base_url="https://testserver") as client:
         yield client
     get_settings.cache_clear()
+
+
+@pytest.fixture
+async def database_sessionmaker(
+    clean_identity_state: IdentityInfrastructure,
+) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    engine = create_async_engine(clean_identity_state.database_url)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        yield sessions
+    finally:
+        await engine.dispose()
 
 
 @pytest.fixture

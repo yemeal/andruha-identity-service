@@ -31,7 +31,6 @@ from app.application.value_objects.idempotency import (
     ExecutionOutcome,
     IdempotencyIdentity,
 )
-from app.core.settings import Settings
 from app.domain.auth_sessions import AuthSession
 from app.domain.exceptions import InvalidRefreshTokenError
 from app.domain.refresh_tokens import RefreshToken
@@ -153,9 +152,6 @@ def _fixture(
         TokenPair(access_token="returned-access", refresh_token="returned-refresh"),
         fail=protector_fails,
     )
-    settings = cast(
-        Settings, type("RefreshSettings", (), {"IDEMPOTENCY_LEASE_SECONDS": 30})()
-    )
     use_case = RefreshUseCase(
         coordinator,
         cast(Any, object()),
@@ -164,7 +160,7 @@ def _fixture(
         FakeCodec(),
         protector,
         uow,
-        settings,
+        lease_seconds=30,
     )
     return use_case, coordinator, uow, protector
 

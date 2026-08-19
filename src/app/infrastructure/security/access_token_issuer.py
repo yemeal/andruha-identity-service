@@ -2,8 +2,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Final
 from uuid import uuid7
 
-import jwt
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+import jwt
 
 from app.application.ports.dto.security import AccessPrincipal
 from app.domain.exceptions import DomainErrors

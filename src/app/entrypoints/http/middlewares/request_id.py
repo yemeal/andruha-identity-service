@@ -1,9 +1,9 @@
 """Pure ASGI middleware for the request correlation boundary."""
 
 import asyncio
+from collections.abc import Callable
 import re
 import time
-from collections.abc import Callable
 
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.responses import JSONResponse, Response

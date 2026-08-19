@@ -2,16 +2,18 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import cast
 
-import structlog
 from dishka.integrations.fastapi import setup_dishka
 from fastapi import FastAPI
-from prometheus_client import (
-    make_asgi_app,  # pyright: ignore[reportUnknownVariableType]
-)
+from prometheus_client import make_asgi_app
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.types import ASGIApp
+import structlog
 
-from app.application.ports.idempotency import ReplayResultProtectorProtocol
+from app.application.ports.idempotency import (
+    HotIdempotencyStoreProtocol,
+    ReplayResultProtectorProtocol,
+)
 from app.application.ports.security import (
     AccessTokenIssuerProtocol,
     AccessTokenVerifierProtocol,
@@ -33,7 +35,7 @@ logger = structlog.get_logger()
 def create_app() -> FastAPI:
     settings = get_settings()
     setup_logging(settings)
-    container = create_container(settings)
+    container = create_container()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
@@ -42,15 +44,16 @@ def create_app() -> FastAPI:
             await container.get(AccessTokenVerifierProtocol)
             await container.get(ReplayResultProtectorProtocol)
             await container.get(AsyncEngine)
+            await container.get(Redis)
+            await container.get(HotIdempotencyStoreProtocol)
             logger.info("application_started", version=app.version)
             yield
         finally:
             logger.info("application_shutting_down")
-            await app.state.dishka_container.close()
 
     app = FastAPI(
         title="Andruha Messenger / Identity Service",
-        version=settings.APP_VERSION,
+        version=settings.app.APP_VERSION,
         lifespan=lifespan,
     )
     app.add_middleware(
@@ -64,7 +67,8 @@ def create_app() -> FastAPI:
         )
     )
     register_exception_handlers(
-        app, idempotency_retry_after_seconds=settings.IDEMPOTENCY_LEASE_SECONDS
+        app,
+        idempotency_retry_after_seconds=settings.idempotency.IDEMPOTENCY_LEASE_SECONDS,
     )
     app.mount("/metrics", cast(ASGIApp, make_asgi_app()))
     setup_dishka(container, app)

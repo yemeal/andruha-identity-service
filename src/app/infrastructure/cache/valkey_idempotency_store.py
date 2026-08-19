@@ -1,15 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 import hashlib
 import json
-from collections.abc import Sequence
 from typing import NoReturn, cast
 from uuid import UUID
 
-import redis.exceptions
-import structlog
 from pydantic import TypeAdapter
 from redis.asyncio import Redis
+import redis.exceptions
+import structlog
 
 from app.application.exceptions.idempotency import (
     IdempotencyStorageUnavailableError,

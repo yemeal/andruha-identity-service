@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from contextlib import suppress
+import uuid
 
 from app.application.exceptions.idempotency import (
     IdempotencyStorageUnavailableError,

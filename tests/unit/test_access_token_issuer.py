@@ -212,6 +212,7 @@ class TestAccessTokenIssuerDI:
         self,
         tmp_path,
         private_key: RSAPrivateKey,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """
         Проверяем: сборку issuer и verifier через настройки и Dishka.
@@ -233,21 +234,15 @@ class TestAccessTokenIssuerDI:
                 format=serialization.PublicFormat.SubjectPublicKeyInfo,
             )
         )
-        settings = Settings(
-            DATABASE_HOST="localhost",
-            DATABASE_PORT=5432,
-            DATABASE_USER="auth",
-            DATABASE_PASSWORD="auth",
-            DATABASE_NAME="auth",
-            DEV_LOGS=True,
-            JWT_PRIVATE_KEY_PATH=private_key_path,
-            JWT_PUBLIC_KEY_PATH=public_key_path,
-            JWT_ACTIVE_KEY_ID="auth-test",
-            JWT_ISSUER="payflow-auth",
-            JWT_SERVICE_AUDIENCE="auth-service",
-            JWT_AUDIENCES=("auth-service, order-service, orchestrator-service"),
+        monkeypatch.setenv("JWT_PRIVATE_KEY_PATH", str(private_key_path))
+        monkeypatch.setenv("JWT_PUBLIC_KEY_PATH", str(public_key_path))
+        monkeypatch.setenv("JWT_ACTIVE_KEY_ID", "auth-test")
+        monkeypatch.setenv("JWT_ISSUER", "payflow-auth")
+        monkeypatch.setenv("JWT_SERVICE_AUDIENCE", "auth-service")
+        monkeypatch.setenv(
+            "JWT_AUDIENCES", "auth-service, order-service, orchestrator-service"
         )
-        container = create_container(settings)
+        container = create_container()
 
         try:
             issuer = await container.get(AccessTokenIssuerProtocol)

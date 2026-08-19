@@ -7,7 +7,7 @@ def test_idempotency_is_organized_by_hexagonal_responsibility() -> None:
     expected_modules = {
         "application/exceptions/idempotency.py",
         "application/ports/dto/idempotency.py",
-        "application/ports/idempotency.py",
+        "application/ports/idempotency/__init__.py",
         "application/services/durable_idempotency.py",
         "application/services/idempotency_coordinator.py",
         "application/services/idempotency_fingerprint.py",
