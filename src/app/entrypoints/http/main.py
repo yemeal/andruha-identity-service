@@ -4,9 +4,7 @@ from typing import cast
 
 from dishka.integrations.fastapi import setup_dishka
 from fastapi import FastAPI
-from prometheus_client import (
-    make_asgi_app,  # pyright: ignore[reportUnknownVariableType]
-)
+from prometheus_client import make_asgi_app
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.types import ASGIApp

@@ -36,7 +36,7 @@ class IdempotencyAppProvider(Provider):
 
     @dishka.provide
     async def valkey(self, settings: ValkeySettings) -> AsyncIterator[Redis]:
-        client = Redis.from_url(  # pyright: ignore[reportUnknownMemberType]
+        client = Redis.from_url(
             settings.VALKEY_URL,
             decode_responses=False,
             max_connections=settings.VALKEY_MAX_CONNECTIONS,

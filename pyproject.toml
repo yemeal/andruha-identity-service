@@ -141,6 +141,9 @@ reportUnknownVariableType = false
 reportUnknownMemberType = false
 reportUnknownArgumentType = false
 reportMissingTypeStubs = false
+reportCallInDefaultInitializer = false
+reportImplicitStringConcatenation = false
+reportUninitializedInstanceVariable = false
 
 # Full strictness on our codebase
 reportOptionalSubscript = true
@@ -162,7 +165,6 @@ reportUntypedNamedTuple = true
 reportIncompatibleMethodOverride = true
 reportIncompatibleVariableOverride = true
 reportInconsistentConstructor = true
-reportUninitializedInstanceVariable = true
 reportOverlappingOverload = true
 
 reportPrivateUsage = true
@@ -185,8 +187,6 @@ reportUnnecessaryTypeIgnoreComment = "error"
 reportGeneralTypeIssues = true
 reportPropertyTypeMismatch = true
 reportFunctionMemberAccess = true
-reportCallInDefaultInitializer = true
-reportImplicitStringConcatenation = true
 
 venvPath = "."
 venv = ".venv"

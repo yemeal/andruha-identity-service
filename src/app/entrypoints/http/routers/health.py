@@ -21,9 +21,7 @@ async def check_postgres(engine: AsyncEngine) -> bool:
 
 async def check_valkey(client: Redis) -> bool:
     try:
-        return bool(
-            await client.ping()  # pyright: ignore[reportUnknownMemberType]
-        )
+        return bool(await client.ping())
     except Exception:
         return False
 
