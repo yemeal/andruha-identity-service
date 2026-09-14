@@ -1,10 +1,13 @@
+from typing import Protocol
 from uuid import UUID
 
 from app.application.ports.repositories.base import AsyncRepositoryProtocol
 from app.domain.auth_sessions import AuthSession
 
 
-class AuthSessionRepositoryProtocol(AsyncRepositoryProtocol[AuthSession, UUID]):
+class AuthSessionRepositoryProtocol(
+    AsyncRepositoryProtocol[AuthSession, UUID], Protocol
+):
     """Store sliding-idle authentication sessions."""
 
     async def get_for_update(self, session_id: UUID) -> AuthSession | None:
