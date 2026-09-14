@@ -109,6 +109,7 @@ The service is fully covered with both unit and end-to-end integration tests aga
 poetry sync --with dev --no-root
 poetry run ruff check .
 poetry run ruff format --check .
+poetry run ty check --error-on-warning
 poetry run pytest tests/unit            # 274 unit tests
 poetry run pytest tests/integration     # 100 integration tests (Postgres + Valkey)
 poetry run pip-audit

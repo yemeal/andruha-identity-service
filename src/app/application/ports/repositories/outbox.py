@@ -1,11 +1,14 @@
 from datetime import datetime
+from typing import Protocol
 import uuid
 
 from app.application.ports.dto.outbox import OutboxMessage
 from app.application.ports.repositories.base import AsyncRepositoryProtocol
 
 
-class OutboxRepositoryProtocol(AsyncRepositoryProtocol[OutboxMessage, uuid.UUID]):
+class OutboxRepositoryProtocol(
+    AsyncRepositoryProtocol[OutboxMessage, uuid.UUID], Protocol
+):
     """Durable lifecycle единой outbox-таблицы команд и событий."""
 
     async def claim_batch(

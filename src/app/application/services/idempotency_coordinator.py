@@ -74,7 +74,8 @@ class IdempotencyCoordinator:
             raise ValueError("lease_seconds must be positive")
         if len(request_hash) != 32:
             raise ValueError("request_hash must be a full SHA-256 digest")
-        if self._hot_store is None:
+        hot_store = self._hot_store
+        if hot_store is None:
             self._observer.observe_hot_degraded("disabled")
             return self._observe(
                 await self._execute_durable(
@@ -87,7 +88,7 @@ class IdempotencyCoordinator:
 
         owner_token = self._owner_token_factory()
         try:
-            begin = await self._hot_store.begin(
+            begin = await hot_store.begin(
                 identity,
                 request_hash,
                 owner_token,
@@ -126,6 +127,7 @@ class IdempotencyCoordinator:
         stop_heartbeat = asyncio.Event()
         heartbeat = asyncio.create_task(
             self._heartbeat(
+                hot_store=hot_store,
                 identity=identity,
                 owner_token=owner_token,
                 lease_seconds=lease_seconds,
@@ -156,7 +158,7 @@ class IdempotencyCoordinator:
             await self._stop_heartbeat(heartbeat, stop_heartbeat)
             if not lost_lease.is_set():
                 try:
-                    await self._hot_store.abandon(identity, owner_token)
+                    await hot_store.abandon(identity, owner_token)
                 except IdempotencyStorageUnavailableError:
                     self._observer.observe_hot_degraded("abandon")
             raise
@@ -170,7 +172,7 @@ class IdempotencyCoordinator:
             and result.outcome in {ExecutionOutcome.EXECUTED, ExecutionOutcome.REPLAY}
         ):
             try:
-                await self._hot_store.complete(
+                await hot_store.complete(
                     identity,
                     owner_token,
                     result.completed,
@@ -179,7 +181,7 @@ class IdempotencyCoordinator:
                 self._observer.observe_hot_degraded("complete")
         elif not lost_lease.is_set():
             try:
-                await self._hot_store.abandon(identity, owner_token)
+                await hot_store.abandon(identity, owner_token)
             except IdempotencyStorageUnavailableError:
                 self._observer.observe_hot_degraded("abandon")
         return self._observe(result)
@@ -213,6 +215,7 @@ class IdempotencyCoordinator:
     async def _heartbeat(
         self,
         *,
+        hot_store: HotIdempotencyStoreProtocol,
         identity: IdempotencyIdentity,
         owner_token: uuid.UUID,
         lease_seconds: int,
@@ -225,7 +228,7 @@ class IdempotencyCoordinator:
                 await self._sleeper.sleep(interval)
                 if stop.is_set():
                     return
-                renewed = await self._hot_store.renew(  # type: ignore[union-attr]
+                renewed = await hot_store.renew(
                     identity,
                     owner_token,
                     lease_seconds,

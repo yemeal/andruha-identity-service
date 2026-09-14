@@ -17,7 +17,6 @@ concurrency:
 env:
   POETRY_VERSION: "2.4.1"
   POETRY_EXPORT_VERSION: "1.10.0"
-  PYRIGHT_VERSION: "1.1.413"
   POETRY_VIRTUALENVS_IN_PROJECT: "true"
   POETRY_NO_INTERACTION: "1"
   IMAGE_NAME: local/${{ github.event.repository.name }}:ci
@@ -69,12 +68,6 @@ jobs:
           python-version: "3.14"
           check-latest: false
 
-      - name: Set up Node.js 24
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version: "24"
-          package-manager-cache: false
-
       - name: Install pinned build tools
         run: >-
           python -m pip install --disable-pip-version-check
@@ -96,10 +89,8 @@ jobs:
       - name: Ruff format
         run: poetry run ruff format --check .
 
-      - name: Pyright strict
-        run: |
-          npm install --global "pyright@${PYRIGHT_VERSION}"
-          pyright
+      - name: ty type check
+        run: poetry run ty check --error-on-warning
 
       - name: Reset coverage data
         run: poetry run coverage erase

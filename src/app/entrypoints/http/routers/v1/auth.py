@@ -143,7 +143,7 @@ def create_auth_router(
         ),
     )
     @inject
-    async def register(  # pyright: ignore[reportUnusedFunction]
+    async def register(
         payload: RegisterRequest,
         auth_service: FromDishka[AuthServiceProtocol],
     ) -> RegisterResponse:
@@ -167,7 +167,7 @@ def create_auth_router(
         },
     )
     @inject
-    async def login(  # pyright: ignore[reportUnusedFunction]
+    async def login(
         payload: LoginRequest,
         auth_service: FromDishka[AuthServiceProtocol],
         settings: FromDishka[SecuritySettings],
@@ -189,7 +189,7 @@ def create_auth_router(
             ),
         )
         @inject
-        async def login_test(  # pyright: ignore[reportUnusedFunction]
+        async def login_test(
             payload: LoginRequest,
             response: Response,
             auth_service: FromDishka[AuthServiceProtocol],
@@ -226,7 +226,7 @@ def create_auth_router(
         },
     )
     @inject
-    async def refresh(  # pyright: ignore[reportUnusedFunction]
+    async def refresh(
         refresh_token: Annotated[
             str | None,
             Security(refresh_cookie),
@@ -274,7 +274,7 @@ def create_auth_router(
         ),
     )
     @inject
-    async def logout(  # pyright: ignore[reportUnusedFunction]
+    async def logout(
         auth_service: FromDishka[AuthServiceProtocol],
         settings: FromDishka[SecuritySettings],
         refresh_token: Annotated[
@@ -295,7 +295,7 @@ def create_auth_router(
         responses=openapi_error_responses(InvalidTokenError),
     )
     @inject
-    async def me(  # pyright: ignore[reportUnusedFunction]
+    async def me(
         response: Response,
         auth_service: FromDishka[AuthServiceProtocol],
         credentials: Annotated[
