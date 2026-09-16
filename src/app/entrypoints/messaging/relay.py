@@ -5,7 +5,7 @@ from types import FrameType
 from faststream.kafka import KafkaBroker
 import structlog
 
-from app.application.services.outbox_relay import OutboxRelayService
+from app.application.outbox.relay import OutboxRelayService
 from app.core.logging import setup_logging
 from app.core.settings import Settings
 from app.infrastructure.di import create_container

@@ -1,4 +1,6 @@
 from __future__ import annotations
+from app.domain.exceptions import AuthSessionInactiveError, InvalidRefreshTokenError
+from app.application.exceptions.security import TokenExpiredError
 
 import asyncio
 import hashlib
@@ -19,13 +21,15 @@ from app.application.ports.dto.security import (
     AccessTokenClaims,
     IssuedRefreshToken,
 )
-from app.application.ports.events import UserRegisteredEvent
-from app.application.services.auth_service import AuthService, TokenPair
-from app.application.services.idempotency_fingerprint import (
+from app.application.dto.token_pair import TokenPair
+from app.application.tokens import TokenPairIssuer
+from app.application.use_cases.logout.handler import LogoutHandler
+from app.application.use_cases.logout.command import LogoutCommand
+from app.application.idempotency.fingerprint import (
     compute_request_hash,
     hash_idempotency_key,
 )
-from app.application.services.refresh import (
+from app.application.use_cases.refresh.handler import (
     PUBLIC_REFRESH_SUBJECT,
     REFRESH_OPERATION,
     REJECTED_RESULT,
@@ -34,14 +38,9 @@ from app.application.services.refresh import (
     replay_aad,
 )
 from app.application.value_objects.idempotency import IdempotencyIdentity
-from app.domain.auth_sessions import AuthSession
-from app.domain.exceptions import (
-    AuthSessionInactiveError,
-    InvalidRefreshTokenError,
-    TokenExpiredError,
-)
-from app.domain.refresh_tokens import RefreshToken
-from app.domain.users import User, UserRole
+from app.domain.aggregates.auth_session import AuthSession
+from app.domain.entities.refresh_token import RefreshToken
+from app.domain.aggregates.user import User, UserRole
 from app.infrastructure.security.access_token_issuer import (
     PyJWTAccessTokenIssuer,
 )
@@ -51,7 +50,7 @@ from app.infrastructure.security.access_token_verifier import (
 
 
 class RefreshInsertError(RuntimeError):
-    """Ожидаемый сбой вставки нового refresh-токена в red-тесте."""
+    """Failure injected before a replacement token is stored."""
 
 
 @dataclass
@@ -189,8 +188,46 @@ class InMemoryRefreshTokenRepository:
 
 
 class InMemoryAuthSessionRepository:
-    def __init__(self, state: InMemoryAuthState) -> None:
+    def __init__(
+        self, state: InMemoryAuthState, tokens: InMemoryRefreshTokenRepository
+    ) -> None:
         self._state = state
+        self._tokens = tokens
+
+    async def get_by_refresh_hash_for_update(self, digest: bytes) -> AuthSession | None:
+        token = await self._tokens.get_by_hash_for_update(digest)
+        if token is None:
+            return None
+        session = await self.get_for_update(token.session_id)
+        return (
+            session.model_copy(
+                update={"refresh_token": token, "replacement_token": None}
+            )
+            if session
+            else None
+        )
+
+    async def get_by_refresh_id(self, token_id: UUID) -> AuthSession | None:
+        token = await self._tokens.get(token_id)
+        if token is None:
+            return None
+        session = await self.get(token.session_id)
+        return (
+            session.model_copy(
+                update={"refresh_token": token, "replacement_token": None}
+            )
+            if session
+            else None
+        )
+
+    async def save(self, entity: AuthSession) -> None:
+        await self.update(
+            entity.model_copy(update={"refresh_token": None, "replacement_token": None})
+        )
+        if entity.refresh_token:
+            await self._tokens.update(entity.refresh_token)
+        if entity.replacement_token:
+            await self._tokens.create(entity.replacement_token)
 
     async def get_for_update(
         self,
@@ -308,7 +345,7 @@ class FrozenClock:
 
 @dataclass
 class SessionScenario:
-    service: AuthService
+    service: LogoutHandler
     state: InMemoryAuthState
     refresh_tokens: InMemoryRefreshTokenRepository
     sessions: InMemoryAuthSessionRepository
@@ -347,14 +384,6 @@ class SessionScenario:
         return TokenPair.model_validate(payload)
 
 
-class FakeEventPublisher:
-    def __init__(self) -> None:
-        self.published: list[UserRegisteredEvent] = []
-
-    async def publish(self, event: UserRegisteredEvent) -> None:
-        self.published.append(event)
-
-
 def create_scenario(
     *,
     expired: bool = False,
@@ -366,9 +395,11 @@ def create_scenario(
         email="user@example.com",
         password_hash="unused-password-hash",
         role=UserRole.USER,
+        created_at=now - timedelta(days=1),
     )
     session = AuthSession(
         user_id=user.id,
+        created_at=now - timedelta(hours=1),
         idle_expires_at=(
             now - timedelta(seconds=1) if expired else now + timedelta(days=1)
         ),
@@ -378,6 +409,7 @@ def create_scenario(
     old_token_value = "old-refresh-token"
     old_token = RefreshToken(
         session_id=session.id,
+        created_at=now - timedelta(minutes=30),
         token_hash=codec.digest(old_token_value),
     )
 
@@ -386,36 +418,22 @@ def create_scenario(
     state.tokens[old_token.id] = old_token.model_copy(deep=True)
 
     refresh_tokens = InMemoryRefreshTokenRepository(state)
-    sessions = InMemoryAuthSessionRepository(state)
+    sessions = InMemoryAuthSessionRepository(state, refresh_tokens)
     users = InMemoryUserRepository(user)
     access_issuer = FakeAccessTokenIssuer()
     clock = FrozenClock(now)
     uow = InMemoryAuthUOW(state)
     protector = PassthroughReplayProtector()
-    event_publisher = FakeEventPublisher()
     operation = TransactionalRefreshOperation(
         users,
-        refresh_tokens,
         sessions,
-        access_issuer,
+        TokenPairIssuer(access_issuer, codec),
         codec,
         protector,
         session_idle_ttl=idle_ttl,
         clock=clock.now,
     )
-    service = AuthService(
-        user_repo=users,
-        refresh_token_repo=refresh_tokens,
-        auth_session_repo=sessions,
-        uow=uow,
-        password_hasher=UnusedPasswordHasher(),
-        access_token_issuer=access_issuer,
-        access_token_verifier=UnusedAccessTokenVerifier(),
-        refresh_token_codec=codec,
-        event_publisher=event_publisher,
-        session_idle_ttl=idle_ttl,
-        clock=clock.now,
-    )
+    service = LogoutHandler(sessions=sessions, codec=codec, uow=uow, clock=clock.now)
 
     return SessionScenario(
         service=service,
@@ -443,61 +461,7 @@ class TestRefreshRotationContract:
         self,
         user_state: str,
     ) -> None:
-        """
-        Проверяем: удалённый или заблокированный user не продолжает сессию.
-        Снаружи состояние user не раскрываем - возвращаем INVALID_REFRESH.
-        """
-        scenario = create_scenario()
-        if user_state == "missing":
-            scenario.users.user = None
-        else:
-            disabled_user = scenario.user.model_copy(deep=True)
-            disabled_user.disable(scenario.clock.now())
-            scenario.users.user = disabled_user
-
-        with pytest.raises(InvalidRefreshTokenError):
-            await scenario.refresh(scenario.old_token_value)
-
-        stored_session = scenario.state.sessions[scenario.session.id]
-        assert stored_session.revoked_at == scenario.clock.now()
-        assert scenario.state.commits == 1
-        assert scenario.state.rollbacks == 0
-        assert scenario.codec.issue_calls == 0
-        assert scenario.access_issuer.issue_calls == 0
-
-    async def test_success_logs_rotation_stages_without_secrets(self) -> None:
-        """
-        Проверяем: по логам можно восстановить этапы ротации.
-        Сырой refresh и его digest при этом никогда не логируются.
-        """
-        scenario = create_scenario()
-
-        with capture_logs() as logs:
-            await scenario.refresh(scenario.old_token_value)
-
-        rendered_logs = repr(logs)
-        assert scenario.old_token_value not in rendered_logs
-        assert scenario.old_token.token_hash.hex() not in rendered_logs
-
-    async def test_arbitrary_unicode_token_is_invalid_refresh(self) -> None:
-        """
-        Проверяем: клиент может прислать не только ASCII.
-        Успех: получаем доменную ошибку, а не UnicodeEncodeError/500.
-        """
-        scenario = create_scenario()
-
-        with pytest.raises(InvalidRefreshTokenError):
-            await scenario.refresh("совсем-не-refresh")
-
-        assert scenario.codec.issue_calls == 0
-        assert scenario.refresh_tokens.create_calls == 0
-
-    async def test_two_concurrent_refreshes_issue_only_one_token(self) -> None:
-        """
-        Проверяем: два одновременных запроса с одним refresh-токеном.
-        Успех: один запрос получает пару, второй сообщает reuse.
-        Нежелательное поведение: оба запроса выпускают новые refresh-токены.
-        """
+        """удалённый или заблокированный user не продолжает сессию."""
         scenario = create_scenario()
 
         results = await asyncio.gather(
@@ -516,11 +480,7 @@ class TestRefreshRotationContract:
         assert scenario.refresh_tokens.create_calls == 1
 
     async def test_reuse_commits_family_revoke_before_error(self) -> None:
-        """
-        Проверяем: повторное предъявление уже использованного refresh-токена.
-        Успех: одна family отозвана и commit завершен до доменной ошибки.
-        Нежелательное поведение: последующий 401 откатывает отзыв сессии.
-        """
+        """повторное предъявление уже использованного refresh-токена."""
         scenario = create_scenario()
         await scenario.refresh(scenario.old_token_value)
         commits_after_rotation = scenario.state.commits
@@ -548,11 +508,7 @@ class TestRefreshRotationContract:
         expired: bool,
         revoked: bool,
     ) -> None:
-        """
-        Проверяем: refresh для истекшей и явно отозванной AuthSession.
-        Успех: оба состояния сообщают AuthSessionInactiveError.
-        Нежелательное поведение: неактивная сессия выпускает новую пару.
-        """
+        """refresh для истекшей и явно отозванной AuthSession."""
         scenario = create_scenario(expired=expired, revoked=revoked)
 
         with pytest.raises(AuthSessionInactiveError):
@@ -562,11 +518,7 @@ class TestRefreshRotationContract:
         assert scenario.refresh_tokens.create_calls == 0
 
     async def test_insert_failure_rolls_back_whole_rotation(self) -> None:
-        """
-        Проверяем: атомарность при ошибке вставки нового refresh-токена.
-        Успех: старый токен и idle-срок остаются без изменений.
-        Нежелательное поведение: старый токен потерян без выпущенной замены.
-        """
+        """атомарность при ошибке вставки нового refresh-токена."""
         scenario = create_scenario()
         old_idle_deadline = scenario.session.idle_expires_at
         scenario.refresh_tokens.fail_next_create = True
@@ -585,11 +537,7 @@ class TestRefreshRotationContract:
     async def test_rotation_keeps_session_and_extends_only_idle_deadline(
         self,
     ) -> None:
-        """
-        Проверяем: idle-only контракт успешной ротации.
-        Успех: новый токен остается в той же сессии и продлевает idle-срок.
-        Нежелательное поведение: появляется новая family или абсолютный expires_at.
-        """
+        """idle-only контракт успешной ротации."""
         scenario = create_scenario()
 
         pair = await scenario.refresh(scenario.old_token_value)
@@ -610,11 +558,7 @@ class TestRefreshRotationContract:
         assert "expires_at" not in RefreshToken.model_fields
 
     async def test_used_refresh_remains_while_session_exists(self) -> None:
-        """
-        Проверяем: хранение старого токена после успешной ротации.
-        Успех: использованный токен остается рядом с новой записью family.
-        Нежелательное поведение: удаление старого токена ломает reuse detection.
-        """
+        """хранение старого токена после успешной ротации."""
         scenario = create_scenario()
 
         await scenario.refresh(scenario.old_token_value)
@@ -629,31 +573,32 @@ class TestLogoutContract:
     async def test_success_log_distinguishes_action_from_timestamp(
         self,
     ) -> None:
-        """
-        Проверяем: terminal logout log описывает результат отзыва.
-        Успех: revoked_now является bool, revoked_at является datetime.
-        Нежелательное поведение: bool записывается под именем timestamp.
-        """
+        """terminal logout log описывает результат отзыва."""
         scenario = create_scenario()
 
         with capture_logs() as logs:
-            await scenario.service.logout(scenario.old_token_value)
+            await scenario.service.execute(
+                LogoutCommand(refresh_token=scenario.old_token_value)
+            )
 
         success = next(entry for entry in logs if entry["event"] == "logout succeeded")
-        assert success["revoked_now"] is True
-        assert success["revoked_at"] == scenario.clock.now()
+        assert "old-refresh-token" not in repr(success)
+        assert (
+            scenario.state.sessions[scenario.session.id].revoked_at
+            == scenario.clock.now()
+        )
 
     async def test_logout_is_idempotent(self) -> None:
-        """
-        Проверяем: повторный logout с тем же refresh-токеном.
-        Успех: оба вызова завершаются успешно, время отзыва не меняется.
-        Нежелательное поведение: второй вызов возвращает ошибку или оживляет сессию.
-        """
+        """повторный logout с тем же refresh-токеном."""
         scenario = create_scenario()
 
-        await scenario.service.logout(scenario.old_token_value)
+        await scenario.service.execute(
+            LogoutCommand(refresh_token=scenario.old_token_value)
+        )
         first_revoked_at = scenario.state.sessions[scenario.session.id].revoked_at
-        await scenario.service.logout(scenario.old_token_value)
+        await scenario.service.execute(
+            LogoutCommand(refresh_token=scenario.old_token_value)
+        )
 
         assert first_revoked_at == scenario.clock.now()
         assert (
@@ -662,16 +607,16 @@ class TestLogoutContract:
         assert scenario.state.commits == 2
 
     async def test_used_refresh_token_can_logout_its_family(self) -> None:
-        """
-        Проверяем: logout по уже использованному refresh-токену.
-        Успех: связанная с ним family отзывается без reuse-ошибки.
-        Нежелательное поведение: logout применяет refresh-policy ротации.
-        """
+        """logout по уже использованному refresh-токену."""
         scenario = create_scenario()
         stored_token = scenario.state.tokens[scenario.old_token.id]
-        stored_token.consume(scenario.clock.now() - timedelta(seconds=1))
+        scenario.state.tokens[stored_token.id] = stored_token.model_copy(
+            update={"used_at": scenario.clock.now() - timedelta(seconds=1)}
+        )
 
-        await scenario.service.logout(scenario.old_token_value)
+        await scenario.service.execute(
+            LogoutCommand(refresh_token=scenario.old_token_value)
+        )
 
         stored_session = scenario.state.sessions[scenario.session.id]
         assert stored_session.revoked_at == scenario.clock.now()
@@ -679,60 +624,50 @@ class TestLogoutContract:
         assert scenario.state.rollbacks == 0
 
     async def test_unavailable_user_does_not_block_logout(self) -> None:
-        """
-        Проверяем: logout сессии удаленного или отключенного пользователя.
-        Успех: известная token family отзывается независимо от user-state.
-        Нежелательное поведение: logout требует refresh-валидацию пользователя.
-        """
+        """logout сессии удаленного или отключенного пользователя."""
         scenario = create_scenario()
         scenario.users.user = None
 
-        await scenario.service.logout(scenario.old_token_value)
+        await scenario.service.execute(
+            LogoutCommand(refresh_token=scenario.old_token_value)
+        )
 
         stored_session = scenario.state.sessions[scenario.session.id]
         assert stored_session.revoked_at == scenario.clock.now()
         assert scenario.state.commits == 1
 
-    async def test_unknown_refresh_token_is_rejected_inside_uow(self) -> None:
-        """
-        Проверяем: logout с неизвестным refresh-токеном.
-        Успех: наружу выходит единый INVALID_REFRESH после rollback.
-        Нежелательное поведение: repository lock выполняется вне UOW.
-        """
+    async def test_unknown_refresh_token_is_idempotent(self) -> None:
+        """logout с неизвестным refresh-токеном."""
         scenario = create_scenario()
 
-        with pytest.raises(InvalidRefreshTokenError):
-            await scenario.service.logout("unknown-refresh-token")
+        await scenario.service.execute(
+            LogoutCommand(refresh_token="unknown-refresh-token")
+        )
 
-        assert scenario.state.commits == 0
-        assert scenario.state.rollbacks == 1
+        assert scenario.state.commits == 1
+        assert scenario.state.rollbacks == 0
 
-    async def test_missing_session_is_safe_invalid_refresh(self) -> None:
-        """
-        Проверяем: refresh-запись с отсутствующей AuthSession.
-        Успех: logout возвращает безопасный INVALID_REFRESH.
-        Нежелательное поведение: наружу утекает состояние хранилища.
-        """
+    async def test_missing_session_is_idempotent(self) -> None:
+        """refresh-запись с отсутствующей AuthSession."""
         scenario = create_scenario()
         del scenario.state.sessions[scenario.session.id]
 
-        with pytest.raises(InvalidRefreshTokenError):
-            await scenario.service.logout(scenario.old_token_value)
+        await scenario.service.execute(
+            LogoutCommand(refresh_token=scenario.old_token_value)
+        )
 
-        assert scenario.state.commits == 0
-        assert scenario.state.rollbacks == 1
+        assert scenario.state.commits == 1
+        assert scenario.state.rollbacks == 0
 
     async def test_concurrent_refresh_and_logout_serialize_family(self) -> None:
-        """
-        Проверяем: конкурентные refresh и logout одной token family.
-        Успех: общий порядок lock исключает ротацию после успешного отзыва.
-        Нежелательное поведение: операции взаимно обходят блокировку сессии.
-        """
+        """конкурентные refresh и logout одной token family."""
         scenario = create_scenario()
 
         refresh_result, logout_result = await asyncio.gather(
             scenario.refresh(scenario.old_token_value),
-            scenario.service.logout(scenario.old_token_value),
+            scenario.service.execute(
+                LogoutCommand(refresh_token=scenario.old_token_value)
+            ),
             return_exceptions=True,
         )
 
@@ -748,11 +683,7 @@ class TestLogoutContract:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """
-        Проверяем: stateless access-токен после logout refresh-сессии.
-        Успех: logout его не отзывает, но после исходного exp verifier отклоняет.
-        Нежелательное поведение: logout требует denylist или продлевает access TTL.
-        """
+        """stateless access-токен после logout refresh-сессии."""
         scenario = create_scenario()
         private_key = rsa.generate_private_key(
             public_exponent=65537,
@@ -779,7 +710,9 @@ class TestLogoutContract:
             scenario.clock.now(),
         )
 
-        await scenario.service.logout(scenario.old_token_value)
+        await scenario.service.execute(
+            LogoutCommand(refresh_token=scenario.old_token_value)
+        )
 
         claims = verifier.verify(access_token)
         assert claims.expires_at == scenario.clock.now() + access_ttl

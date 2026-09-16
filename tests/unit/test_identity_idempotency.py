@@ -1,15 +1,14 @@
 import hashlib
-import inspect
 
-from app.application.services.auth_service import AuthServiceProtocol
-from app.application.services.idempotency_fingerprint import (
+
+from app.application.use_cases.refresh.command import RefreshCommand
+from app.application.idempotency.fingerprint import (
     compute_request_hash,
     hash_idempotency_key,
 )
-from app.application.services.refresh import (
+from app.application.use_cases.refresh.handler import (
     PUBLIC_REFRESH_SUBJECT,
     REFRESH_OPERATION,
-    RefreshUseCase,
 )
 
 
@@ -34,7 +33,6 @@ def test_refresh_fingerprint_is_semantic_and_stable() -> None:
 
 
 def test_only_guarded_refresh_use_case_is_public() -> None:
-    assert not hasattr(AuthServiceProtocol, "refresh")
-    assert "key_hash" in inspect.signature(RefreshUseCase.execute).parameters
+    assert "key_hash" in RefreshCommand.model_fields
     assert PUBLIC_REFRESH_SUBJECT == "public-refresh"
     assert REFRESH_OPERATION == "auth.refresh"

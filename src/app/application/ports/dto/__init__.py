@@ -4,6 +4,12 @@ from app.application.ports.dto.idempotency import (
     ExecutionResult,
     StoredResult,
 )
+from app.application.ports.dto.registration import (
+    RegistrationOperation,
+    RegistrationOutcome,
+    RegistrationResult,
+    RegistrationStatus,
+)
 from app.application.ports.dto.security import (
     AccessPrincipal,
     AccessTokenClaims,
@@ -17,5 +23,9 @@ __all__ = (
     "CompletedIdempotencyResult",
     "ExecutionResult",
     "IssuedRefreshToken",
+    "RegistrationOperation",
+    "RegistrationOutcome",
+    "RegistrationResult",
+    "RegistrationStatus",
     "StoredResult",
 )

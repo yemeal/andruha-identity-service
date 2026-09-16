@@ -1,17 +1,17 @@
 from __future__ import annotations
+from app.application.exceptions.persistence import PersistenceIntegrityError
 
 import asyncio
 from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from tests.integration.conftest import IdentityInfrastructure
 
 from app.application.ports.dto.idempotency import StoredResult
-from app.application.services.durable_idempotency import DurableExecutionService
-from app.application.services.idempotency_fingerprint import (
+from app.application.idempotency.durable import DurableExecutionService
+from app.application.idempotency.fingerprint import (
     compute_request_hash,
     hash_idempotency_key,
 )
@@ -19,7 +19,7 @@ from app.application.value_objects.idempotency import (
     ExecutionOutcome,
     IdempotencyIdentity,
 )
-from app.domain.users import User
+from app.domain.aggregates.user import User
 from app.infrastructure.database.models import IdempotencyRecordORM, UserORM
 from app.infrastructure.database.repositories.idempotency_record_repository import (
     IdempotencyRecordRepository,
@@ -149,7 +149,7 @@ async def test_commit_failure_rolls_back_business_write_and_result(
                     result_payload={"must": "rollback"},
                 )
 
-            with pytest.raises(IntegrityError):
+            with pytest.raises(PersistenceIntegrityError):
                 await durable.execute_once(identity, request_hash, effect)
 
         async with sessions() as session:

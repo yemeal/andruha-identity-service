@@ -5,6 +5,8 @@ from dishka import Provider, Scope
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.idempotency.coordinator import IdempotencyCoordinator
+from app.application.idempotency.durable import DurableExecutionService
 from app.application.ports.idempotency import (
     DurableExecutionProtocol,
     HotIdempotencyStoreProtocol,
@@ -13,8 +15,6 @@ from app.application.ports.idempotency import (
     IdempotencyRecordRepositoryProtocol,
 )
 from app.application.ports.uow import AsyncUOWProtocol
-from app.application.services.durable_idempotency import DurableExecutionService
-from app.application.services.idempotency_coordinator import IdempotencyCoordinator
 from app.core.settings import IdempotencySettings, ValkeySettings
 from app.infrastructure.cache import ValkeyHotIdempotencyStore
 from app.infrastructure.database.repositories.idempotency_record_repository import (

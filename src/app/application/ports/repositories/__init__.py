@@ -8,8 +8,8 @@ from app.application.ports.repositories.idempotency_records import (
 from app.application.ports.repositories.outbox import (
     OutboxRepositoryProtocol,
 )
-from app.application.ports.repositories.refresh_tokens import (
-    RefreshTokenRepositoryProtocol,
+from app.application.ports.repositories.registration_operations import (
+    RegistrationOperationRepositoryProtocol,
 )
 from app.application.ports.repositories.users import UserRepositoryProtocol
 
@@ -18,6 +18,6 @@ __all__ = (
     "AuthSessionRepositoryProtocol",
     "IdempotencyRecordRepositoryProtocol",
     "OutboxRepositoryProtocol",
-    "RefreshTokenRepositoryProtocol",
+    "RegistrationOperationRepositoryProtocol",
     "UserRepositoryProtocol",
 )

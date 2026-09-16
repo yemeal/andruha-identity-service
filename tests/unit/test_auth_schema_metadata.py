@@ -5,11 +5,7 @@ class TestAuthSchemaMetadata:
     def test_temporal_constraints_and_cleanup_indexes_are_declared(
         self,
     ) -> None:
-        """
-        Проверяем: ORM metadata защищает временные инварианты auth state.
-        Успех: check constraints и partial cleanup indexes имеют стабильные имена.
-        Нежелательное поведение: защита существует только в Pydantic или migration.
-        """
+        """ORM metadata защищает временные инварианты auth state."""
         session_constraint_names = {
             constraint.name for constraint in AuthSessionORM.__table__.constraints
         }

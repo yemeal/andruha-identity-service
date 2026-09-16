@@ -6,7 +6,7 @@ from app.application.ports.events import EventPublisherProtocol, UserRegisteredE
 from app.application.ports.repositories import (
     AuthSessionRepositoryProtocol,
     OutboxRepositoryProtocol,
-    RefreshTokenRepositoryProtocol,
+    RegistrationOperationRepositoryProtocol,
     UserRepositoryProtocol,
 )
 from app.core.settings import AppSettings, KafkaSettings
@@ -14,8 +14,8 @@ from app.infrastructure.database.repositories.auth_session_repository import (
     AuthSessionRepository,
 )
 from app.infrastructure.database.repositories.outbox_repository import OutboxRepository
-from app.infrastructure.database.repositories.refresh_token_repository import (
-    RefreshTokenRepository,
+from app.infrastructure.database.repositories.registration_operation_repository import (
+    RegistrationOperationRepository,
 )
 from app.infrastructure.database.repositories.user_repository import UserRepository
 
@@ -26,10 +26,6 @@ class RepositoriesProvider(Provider):
     @dishka.provide
     def users(self, session: AsyncSession) -> UserRepositoryProtocol:
         return UserRepository(session)
-
-    @dishka.provide
-    def tokens(self, session: AsyncSession) -> RefreshTokenRepositoryProtocol:
-        return RefreshTokenRepository(session)
 
     @dishka.provide
     def sessions(self, session: AsyncSession) -> AuthSessionRepositoryProtocol:
@@ -47,6 +43,12 @@ class RepositoriesProvider(Provider):
             topic=kafka_settings.KAFKA_USER_REGISTERED_TOPIC,
             producer=app_settings.SERVICE_NAME,
         )
+
+    @dishka.provide
+    def registration_operations(
+        self, session: AsyncSession
+    ) -> RegistrationOperationRepositoryProtocol:
+        return RegistrationOperationRepository(session)
 
     @dishka.provide
     def user_registered_event_publisher(

@@ -47,31 +47,16 @@ class OutboxRepository(
         claim_expires_at: datetime,
         limit: int,
     ) -> list[OutboxMessage]:
-        """
-        Атомарный захват батча сообщений.
-
-
-
-        :param owner_token: Токен конкретного воркера
-        :param claimed_at: Текущее время
-        :param claim_expires_at: Время истечения "аренды"
-        :param limit: Размер батча
-        :return: Список из outbox сообщений
-        """
-        # Валидируем входные данные
+        """Claim eligible messages without overtaking unfinished messages of the same key."""
         if limit <= 0:
             raise ValueError("claim limit must be positive")
         if claim_expires_at <= claimed_at:
             raise ValueError("claim expiration must be after claim time")
 
-        # Нам нужно сравнивать записи в таблице outbox друг с другом,
-        # поэтому создаем два виртуальных псевдонима одной и той же таблицы:
-        # candidate (кандидат на отправку) и earlier (более ранняя запись).
         candidate = aliased(OutboxMessageORM, name="candidate_outbox")
         earlier = aliased(OutboxMessageORM, name="earlier_outbox")
 
-        # что считается «более ранней записью»? Та, у которой created_at меньше.
-        # А если время совпало до микросекунды - сравниваем по id
+        # UUID breaks ties when creation timestamps match.
         earlier_position = or_(
             earlier.created_at < candidate.created_at,
             and_(
@@ -79,9 +64,7 @@ class OutboxRepository(
                 earlier.id < candidate.id,
             ),
         )
-        # Критически важная защита: если для одного и того же пользователя (key)
-        # есть более раннее незавершенное сообщение, мы НЕ имеем права брать новое!
-        # Иначе события придут задом наперед.
+        # An unfinished predecessor blocks later messages with the same key.
         has_earlier_nonterminal_for_key = exists(
             select(earlier.id).where(
                 earlier.key == candidate.key,
@@ -91,9 +74,7 @@ class OutboxRepository(
                 earlier_position,
             )
         )
-        # Либо новая запись в статусе `PENDING`, у которой наступило время `available_at`.
-        # Либо запись в статусе `CLAIMED`, у которой истекла аренда (`claim_expires_at` <= now).
-        # Если другой воркер упал посреди отправки, через 30 секунд его запись подберет живой воркер!
+        # An expired lease allows another worker to recover the message.
         eligible = or_(
             and_(
                 candidate.status == OutboxStatus.PENDING,
@@ -105,7 +86,6 @@ class OutboxRepository(
             ),
         )
 
-        # блокировка FOR UPDATE SKIP LOCKED + CTE залоченной выборки
         claimable_ids = (
             select(candidate.id)
             .where(
@@ -115,12 +95,9 @@ class OutboxRepository(
             .order_by(candidate.created_at.asc(), candidate.id.asc())
             .limit(limit)
             .with_for_update(of=candidate, skip_locked=True)
-            .cte(
-                "claimable_outbox"
-            )  # оформляет выборку как временную таблицу в памяти запроса (CTE).
+            .cte("claimable_outbox")
         )
 
-        # атомарный перевод в статус CLAIMED
         statement = (
             update(OutboxMessageORM)
             .where(
@@ -133,11 +110,11 @@ class OutboxRepository(
                 terminal_at=None,
             )
             .returning(OutboxMessageORM)
-            .execution_options(synchronize_session=False)
+            .execution_options(synchronize_session=False, populate_existing=True)
         )
         result = await self._session.execute(statement)
         rows = list(result.scalars().all())
-        # отвязывает объекты от сессии SQLAlchemy, чтобы их можно было безопасно передавать по приложению.
+        # Detach bulk-updated rows before later transaction scopes reuse the session.
         self._session.expunge_all()
         rows.sort(key=lambda row: (row.created_at, row.id))
         return [self._to_domain(row) for row in rows]
@@ -149,22 +126,12 @@ class OutboxRepository(
         owner_token: uuid.UUID,
         published_at: datetime,
     ) -> bool:
-        """
-        Подтверждение успешной отправки в брокер.
-
-        :param message_id: ID успешно отправленного события
-        :param owner_token: Токен воркера, пытающийся финализировать отправку (для защиты от зомби-воркеров)
-        :param published_at: timestamp терминализации
-        :return: `True` если получилось финализровать, иначе `False`
-        """
+        """Mark delivery complete only while the worker still owns the claim."""
         statement = (
             update(OutboxMessageORM)
             .where(
                 OutboxMessageORM.id == message_id,
                 OutboxMessageORM.status == OutboxStatus.CLAIMED,
-                # Если воркер завис надолго, то его аренда истекла, и запись перехватит другой воркер.
-                # Когда первый очнется и попытается пометить запись как SUCCESS,
-                # условие не сойдется, запрос вернет 0 строк, и зомби-воркер ничего не испортит!
                 OutboxMessageORM.claim_token == owner_token,
             )
             .values(
@@ -189,11 +156,7 @@ class OutboxRepository(
         available_at: datetime,
         error_class: str = "TransientPublishError",
     ) -> bool:
-        """
-        Планирование повторной попытки (Backoff)
-
-        Переводит запись обратно в PENDING, но сдвигает available_at в будущее (экспоненциальный бэкофф).
-        """
+        """Release the claim and defer the next attempt until available_at."""
         statement = (
             update(OutboxMessageORM)
             .where(
@@ -224,12 +187,7 @@ class OutboxRepository(
         quarantined_at: datetime,
         error_class: str = "PermanentOutboxPublishError",
     ) -> bool:
-        """
-        Отправка в карантин (DLQ)
-
-        Если сообщение битое (схема невалидна)
-        или исчерпан лимит попыток (например, 10 раз подряд), оно уходит в QUARANTINED и больше не блокирует очередь.
-        """
+        """Quarantine a failed message and unblock later messages of the same key."""
         statement = (
             update(OutboxMessageORM)
             .where(
@@ -257,9 +215,7 @@ class OutboxRepository(
         *,
         available_at: datetime,
     ) -> bool:
-        """
-        Ручной перезапуск из карантина
-        """
+        """Redrive only when no later message of the same key exists."""
         target = aliased(OutboxMessageORM, name="redrive_target")
         later = aliased(OutboxMessageORM, name="later_outbox")
         later_exists = exists(
@@ -290,7 +246,6 @@ class OutboxRepository(
             .values(
                 status=OutboxStatus.PENDING,
                 attempts=0,
-                last_error=None,
                 last_error_class=None,
                 available_at=available_at,
                 claim_token=None,
@@ -298,8 +253,8 @@ class OutboxRepository(
                 terminal_at=None,
                 redrive_count=OutboxMessageORM.redrive_count + 1,
             )
-            .returning(OutboxMessageORM.id)
-            .execution_options(synchronize_session=False)
+            .returning(OutboxMessageORM)
+            .execution_options(synchronize_session=False, populate_existing=True)
         )
         result = await self._session.execute(statement)
         return result.scalar_one_or_none() is not None
@@ -310,12 +265,7 @@ class OutboxRepository(
         terminal_at: datetime,
         limit: int,
     ) -> int:
-        """
-        Фоновая очистка
-
-        Чтобы таблица outbox не разрасталась до терабайтов,
-        фоновый воркер удаляет старые завершенные сообщения маленькими порциями.
-        """
+        """Delete a bounded batch of terminal messages older than the cutoff."""
         if limit <= 0:
             raise ValueError("cleanup limit must be positive")
         candidates = (

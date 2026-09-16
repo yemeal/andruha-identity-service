@@ -1,19 +1,18 @@
 from typing import Protocol
 from uuid import UUID
 
-from app.application.ports.repositories.base import AsyncRepositoryProtocol
-from app.domain.auth_sessions import AuthSession
+from app.domain.aggregates.auth_session import AuthSession
 
 
-class AuthSessionRepositoryProtocol(
-    AsyncRepositoryProtocol[AuthSession, UUID], Protocol
-):
-    """Store sliding-idle authentication sessions."""
+class AuthSessionRepositoryProtocol(Protocol):
+    """Хранит переход корня и его токенов в транзакции вызывающего use case."""
 
-    async def get_for_update(self, session_id: UUID) -> AuthSession | None:
-        """SELECT FOR UPDATE на время refresh/logout."""
-        ...
+    async def create(self, session: AuthSession) -> AuthSession: ...
 
-    async def revoke_all_for_user(self, user_id: UUID) -> int:
-        """Отозвать все сессии пользователя."""
-        ...
+    async def save(self, session: AuthSession) -> None: ...
+
+    async def get_by_refresh_hash_for_update(
+        self, token_hash: bytes
+    ) -> AuthSession | None: ...
+
+    async def get_by_refresh_id(self, token_id: UUID) -> AuthSession | None: ...

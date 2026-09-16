@@ -1,4 +1,3 @@
-from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from app.application.ports.dto.idempotency import ExecutionResult
@@ -14,5 +13,4 @@ class IdempotencyCoordinatorProtocol(Protocol):
         operation: IdempotentOperation,
         *,
         lease_seconds: int,
-        prepare: Callable[[], Awaitable[None]] | None = None,
     ) -> ExecutionResult: ...

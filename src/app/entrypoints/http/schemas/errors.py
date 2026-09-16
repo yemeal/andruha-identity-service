@@ -16,6 +16,7 @@ class AuthApiErrorCode(StrEnum):
     IDEMPOTENCY_UNAVAILABLE = "auth.idempotency_unavailable"
     REFRESH_REPLAY_UNAVAILABLE = "auth.refresh_replay_unavailable"
     USER_NOT_FOUND = "auth.user_not_found"
+    PROFILE_PROVISIONING_UNAVAILABLE = "auth.profile_provisioning_unavailable"
 
 
 class ApiErrorResponse(CamelCaseBase):

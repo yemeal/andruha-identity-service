@@ -26,10 +26,12 @@ def register(
     *,
     email: str | None = None,
     password: str = DEFAULT_PASSWORD,
+    idempotency_key: str | None = None,
 ) -> tuple[str, Response]:
     selected_email = email or unique_email()
     response = client.post(
         "/api/v1/auth/register",
+        headers={"Idempotency-Key": idempotency_key or f"register-{uuid4()}"},
         json={"email": selected_email, "password": password},
     )
     return selected_email, response

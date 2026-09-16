@@ -24,8 +24,8 @@ from app.application.ports.dto.idempotency import (
     ExecutionResult,
     StoredResult,
 )
-from app.application.services.idempotency_coordinator import IdempotencyCoordinator
-from app.application.services.idempotency_fingerprint import (
+from app.application.idempotency.coordinator import IdempotencyCoordinator
+from app.application.idempotency.fingerprint import (
     compute_request_hash,
     hash_idempotency_key,
 )
@@ -215,11 +215,7 @@ def _coordinator(
 
 class TestOwnerAndDurableFence:
     async def test_nonpositive_lease_is_rejected_before_touching_stores(self) -> None:
-        """
-        Проверяем: coordinator не создаёт мгновенно истёкший или отрицательный lease.
-        Успех: lease_seconds<=0 даёт ValueError до HotStore и durable callback.
-        Нежелательное поведение: два workers одновременно считают себя владельцами.
-        """
+        """coordinator не создаёт мгновенно истёкший или отрицательный lease."""
         hot = FakeHotStore()
         durable = FakeDurableExecution()
         coordinator = _coordinator(hot=hot, durable=durable)
@@ -236,11 +232,7 @@ class TestOwnerAndDurableFence:
         assert durable.calls == []
 
     async def test_core_generates_unique_owner_for_each_execution(self) -> None:
-        """
-        Проверяем: entrypoint не может навязать повторно используемый owner token.
-        Успех: два execute получают разные tokens от injected factory.
-        Нежелательное поведение: общий lock value позволяет worker завершить чужую работу.
-        """
+        """entrypoint не может навязать повторно используемый owner token."""
         first_owner = uuid.uuid4()
         second_owner = uuid.uuid4()
         hot = FakeHotStore(
@@ -276,11 +268,7 @@ class TestOwnerAndDurableFence:
         assert first_owner != second_owner
 
     async def test_hot_acquire_always_executes_through_durable_fence(self) -> None:
-        """
-        Проверяем: Redis lease не доказывает отсутствие committed business effect.
-        Успех: ACQUIRED вызывает execute_once, callback и cached CAS completion.
-        Нежелательное поведение: потеря Redis позволяет повторить уже созданный заказ.
-        """
+        """Redis lease не доказывает отсутствие committed business effect."""
         hot = FakeHotStore()
         durable = FakeDurableExecution()
         coordinator = _coordinator(hot=hot, durable=durable)
@@ -308,11 +296,7 @@ class TestOwnerAndDurableFence:
     async def test_durable_replay_after_hot_restart_skips_business_callback(
         self,
     ) -> None:
-        """
-        Проверяем: пустой Redis после рестарта не означает отсутствие effect.
-        Успех: ACQUIRED плюс durable REPLAY не вызывает operation второй раз.
-        Нежелательное поведение: потерянный HTTP-ответ создаёт второй заказ.
-        """
+        """пустой Redis после рестарта не означает отсутствие effect."""
         completed = _completed()
         durable = FakeDurableExecution(
             forced_result=ExecutionResult(
@@ -343,11 +327,7 @@ class TestOwnerAndDurableFence:
         assert operation_called is False
 
     async def test_durable_conflict_skips_business_callback(self) -> None:
-        """
-        Проверяем: DB record с другим request hash остаётся финальным арбитром.
-        Успех: CONFLICT возвращается без вызова operation.
-        Нежелательное поведение: Redis restart позволяет переиспользовать старый ключ.
-        """
+        """DB record с другим request hash остаётся финальным арбитром."""
         durable = FakeDurableExecution(
             forced_result=ExecutionResult(
                 outcome=ExecutionOutcome.CONFLICT,
@@ -401,11 +381,7 @@ class TestHotDecisions:
         begin_result: BeginResult,
         expected_outcome: ExecutionOutcome,
     ) -> None:
-        """
-        Проверяем: готовое решение HotStore не запускает второй coordination path.
-        Успех: REPLAY, CONFLICT и IN_PROGRESS возвращаются без execute_once.
-        Нежелательное поведение: параллельный request обходит действующий lease.
-        """
+        """готовое решение HotStore не запускает второй coordination path."""
         hot = FakeHotStore(begin_results=[begin_result])
         durable = FakeDurableExecution()
         coordinator = _coordinator(hot=hot, durable=durable)
@@ -422,134 +398,9 @@ class TestHotDecisions:
         assert durable.calls == []
 
 
-class TestPreparationBeforeDurableMutation:
-    @pytest.mark.parametrize("hot_mode", ["absent", "unavailable"])
-    async def test_durable_replay_skips_preparation_on_slow_paths(
-        self,
-        hot_mode: str,
-    ) -> None:
-        """
-        Проверяем: no-hot и hot-outage retry сначала читают durable result.
-        Успех: REPLAY возвращается без external preparation и execute_once.
-        Нежелательное поведение: committed retry зависит от повторной доступности Pricing.
-        """
-        identity = _identity()
-        request_hash = _request_hash()
-        completed = _completed(request_hash)
-        durable = FakeDurableExecution(
-            find_result=ExecutionResult(
-                outcome=ExecutionOutcome.REPLAY,
-                completed=completed,
-            )
-        )
-        hot = (
-            None
-            if hot_mode == "absent"
-            else FakeHotStore(begin_error=IdempotencyStorageUnavailableError())
-        )
-        coordinator = IdempotencyCoordinator(
-            hot_store=hot,
-            durable_execution=durable,
-        )
-        prepare_calls = 0
-
-        async def prepare() -> None:
-            nonlocal prepare_calls
-            prepare_calls += 1
-
-        result = await coordinator.execute(
-            identity,
-            request_hash,
-            operation=lambda: asyncio.sleep(0, result=_stored()),
-            lease_seconds=60,
-            prepare=prepare,
-        )
-
-        assert result.outcome is ExecutionOutcome.REPLAY
-        assert result.completed == completed
-        assert prepare_calls == 0
-        assert durable.find_calls == [(identity, request_hash)]
-        assert durable.calls == []
-
-    async def test_hot_acquire_still_checks_durable_before_preparation(
-        self,
-    ) -> None:
-        """
-        Проверяем: Redis ACQUIRED не доказывает отсутствие committed DB effect.
-        Успех: durable REPLAY пропускает prepare/callback и заполняет hot result.
-        Нежелательное поведение: Redis restart повторно вызывает внешний Pricing.
-        """
-        identity = _identity()
-        request_hash = _request_hash()
-        completed = _completed(request_hash)
-        durable = FakeDurableExecution(
-            find_result=ExecutionResult(
-                outcome=ExecutionOutcome.REPLAY,
-                completed=completed,
-            )
-        )
-        hot = FakeHotStore()
-        coordinator = _coordinator(hot=hot, durable=durable)
-        prepare_calls = 0
-
-        async def prepare() -> None:
-            nonlocal prepare_calls
-            prepare_calls += 1
-
-        result = await coordinator.execute(
-            identity,
-            request_hash,
-            operation=lambda: asyncio.sleep(0, result=_stored()),
-            lease_seconds=60,
-            prepare=prepare,
-        )
-
-        assert result.outcome is ExecutionOutcome.REPLAY
-        assert prepare_calls == 0
-        assert durable.calls == []
-        assert hot.complete_calls[0][2] == completed
-
-    async def test_preparation_finishes_before_durable_callback(self) -> None:
-        """
-        Проверяем: внешний preparation не выполняется внутри durable UoW callback.
-        Успех: prepare завершается до execute_once и operation видит готовые данные.
-        Нежелательное поведение: Pricing удерживает DB transaction и row locks.
-        """
-        durable = FakeDurableExecution()
-        coordinator = IdempotencyCoordinator(
-            hot_store=None,
-            durable_execution=durable,
-        )
-        prepared = False
-
-        async def prepare() -> None:
-            nonlocal prepared
-            prepared = True
-
-        async def operation() -> StoredResult:
-            assert prepared is True
-            return _stored()
-
-        result = await coordinator.execute(
-            _identity(),
-            _request_hash(),
-            operation=operation,
-            lease_seconds=60,
-            prepare=prepare,
-        )
-
-        assert result.outcome is ExecutionOutcome.EXECUTED
-        assert len(durable.find_calls) == 1
-        assert durable.operation_calls == 1
-
-
 class TestHeartbeatAndCAS:
     async def test_long_operation_renews_before_half_of_lease(self) -> None:
-        """
-        Проверяем: живой worker продлевает lease до окончания операции дольше 60 секунд.
-        Успех: heartbeat interval меньше 30 секунд и renew использует тот же owner.
-        Нежелательное поведение: второй worker получает lock во время активной работы.
-        """
+        """живой worker продлевает lease до окончания операции дольше 60 секунд."""
         owner_token = uuid.uuid4()
         hot = FakeHotStore()
         durable = FakeDurableExecution()
@@ -590,11 +441,7 @@ class TestHeartbeatAndCAS:
     async def test_lost_lease_forbids_hot_completion_but_keeps_durable_result(
         self,
     ) -> None:
-        """
-        Проверяем: stale worker не пишет cache поверх нового владельца.
-        Успех: renew=False запрещает hot complete, durable EXECUTED остаётся результатом.
-        Нежелательное поведение: старый owner затирает cached replay нового worker.
-        """
+        """stale worker не пишет cache поверх нового владельца."""
         hot = FakeHotStore(renew_result=False)
         durable = FakeDurableExecution()
         sleeper = ControlledSleeper()
@@ -630,11 +477,7 @@ class TestHeartbeatAndCAS:
         assert hot.complete_calls == []
 
     async def test_heartbeat_storage_outage_is_treated_as_lost_lease(self) -> None:
-        """
-        Проверяем: Redis падает после acquire, пока PostgreSQL mutation ещё выполняется.
-        Успех: durable result возвращается, hot complete не вызывается, outage не маскирует commit.
-        Нежелательное поведение: клиент получает failure после уже совершённого эффекта.
-        """
+        """Redis падает после acquire, пока PostgreSQL mutation ещё выполняется."""
         hot = FakeHotStore(renew_error=IdempotencyStorageUnavailableError())
         durable = FakeDurableExecution()
         sleeper = ControlledSleeper()
@@ -672,11 +515,7 @@ class TestHeartbeatAndCAS:
     async def test_unexpected_renew_error_does_not_hide_durable_success(
         self,
     ) -> None:
-        """
-        Проверяем: heartbeat bug не меняет уже определённый durable outcome.
-        Успех: EXECUTED возвращается без hot complete после renew RuntimeError.
-        Нежелательное поведение: клиент видит 500 после committed business effect.
-        """
+        """heartbeat bug не меняет уже определённый durable outcome."""
         hot = FakeHotStore(renew_error=RuntimeError("broken renew parser"))
         sleeper = ControlledSleeper()
         coordinator = _coordinator(
@@ -714,11 +553,7 @@ class TestHeartbeatAndCAS:
     async def test_unexpected_renew_error_does_not_mask_business_error(
         self,
     ) -> None:
-        """
-        Проверяем: heartbeat failure не заменяет исходную ошибку operation.
-        Успех: caller получает business ValueError, lease считается потерянным.
-        Нежелательное поведение: renew RuntimeError скрывает причину rollback.
-        """
+        """heartbeat failure не заменяет исходную ошибку operation."""
         hot = FakeHotStore(renew_error=RuntimeError("broken renew parser"))
         sleeper = ControlledSleeper()
         coordinator = _coordinator(
@@ -755,11 +590,7 @@ class TestHeartbeatAndCAS:
         assert hot.abandon_calls == []
 
     async def test_operation_error_abandons_only_current_owner(self) -> None:
-        """
-        Проверяем: rollback path снимает lease через compare-and-delete.
-        Успех: исходная ошибка пробрасывается, abandon получает owner этого execute.
-        Нежелательное поведение: ошибка оставляет lock до TTL или удаляет чужой lease.
-        """
+        """rollback path снимает lease через compare-and-delete."""
         owner_token = uuid.uuid4()
         hot = FakeHotStore()
         coordinator = _coordinator(
@@ -787,11 +618,7 @@ class TestRedisFailureFallback:
     async def test_known_hot_outage_executes_directly_through_durable_port(
         self,
     ) -> None:
-        """
-        Проверяем: Redis outage не делает optional dependency обязательной.
-        Успех: StorageUnavailable ведёт в execute_once и не отвечает клиенту 503.
-        Нежелательное поведение: заказ нельзя создать при здоровом PostgreSQL.
-        """
+        """Redis outage не делает optional dependency обязательной."""
         hot = FakeHotStore(begin_error=IdempotencyStorageUnavailableError())
         durable = FakeDurableExecution()
         coordinator = _coordinator(hot=hot, durable=durable)
@@ -808,11 +635,7 @@ class TestRedisFailureFallback:
         assert hot.complete_calls == []
 
     async def test_unexpected_hot_error_is_not_hidden(self) -> None:
-        """
-        Проверяем: graceful degradation ловит только известную недоступность storage.
-        Успех: programming error пробрасывается и durable operation не запускается.
-        Нежелательное поведение: повреждение протокола незаметно уходит в DB slow path.
-        """
+        """graceful degradation ловит только известную недоступность storage."""
         durable = FakeDurableExecution()
         coordinator = _coordinator(
             hot=FakeHotStore(begin_error=RuntimeError("broken parser")),

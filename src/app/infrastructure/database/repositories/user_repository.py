@@ -5,7 +5,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.ports.repositories.users import UserRepositoryProtocol
-from app.domain.users import User
+from app.domain.aggregates.user import User
 from app.domain.value_objects.email import NormalizedEmail
 from app.infrastructure.database.models.users import UserORM
 from app.infrastructure.database.repositories.base_repository import (
@@ -17,8 +17,6 @@ class UserRepository(
     SQLAlchemyAsyncRepository[User, UserORM],
     UserRepositoryProtocol,
 ):
-    """Специализированный репозиторий для User"""
-
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session, User, UserORM)
 
@@ -36,7 +34,7 @@ class UserRepository(
         if orm_model is None:
             return None
 
-        return User.model_validate(orm_model, from_attributes=True)
+        return self._to_domain(orm_model)
 
     async def get_by_email(self, email: NormalizedEmail) -> User | None:
         stmt = select(UserORM).where(UserORM.email == email)
@@ -47,7 +45,7 @@ class UserRepository(
         if orm_model is None:
             return None
 
-        return User.model_validate(orm_model, from_attributes=True)
+        return self._to_domain(orm_model)
 
     async def get_for_update(self, user_id: UUID) -> User | None:
         stmt = select(UserORM).where(UserORM.id == user_id).with_for_update()
@@ -58,4 +56,4 @@ class UserRepository(
         if orm_model is None:
             return None
 
-        return User.model_validate(orm_model, from_attributes=True)
+        return self._to_domain(orm_model)

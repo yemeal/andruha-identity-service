@@ -19,9 +19,9 @@ from app.application.ports.dto.idempotency import (
     CompletedIdempotencyResult,
     StoredResult,
 )
-from app.application.services.durable_idempotency import DurableExecutionService
-from app.application.services.idempotency_coordinator import IdempotencyCoordinator
-from app.application.services.idempotency_fingerprint import (
+from app.application.idempotency.durable import DurableExecutionService
+from app.application.idempotency.coordinator import IdempotencyCoordinator
+from app.application.idempotency.fingerprint import (
     compute_request_hash,
     hash_idempotency_key,
 )
@@ -173,11 +173,7 @@ def _service(
 
 class TestAtomicExecution:
     async def test_effect_and_completed_record_share_one_commit(self) -> None:
-        """
-        Проверяем: business mutation и durable replay record атомарны.
-        Успех: один commit одновременно делает видимыми effect и record.
-        Нежелательное поведение: dual write оставляет заказ без idempotency fence.
-        """
+        """business mutation и durable replay record атомарны."""
         session = FakeTransactionalSession()
         service, _ = _service(session)
         identity = _identity()
@@ -202,11 +198,7 @@ class TestAtomicExecution:
         assert session.rollbacks == 0
 
     async def test_operation_failure_rolls_back_effect_and_record(self) -> None:
-        """
-        Проверяем: callback exception не оставляет половину идемпотентной mutation.
-        Успех: исходная ошибка проброшена, staged effect и record отсутствуют.
-        Нежелательное поведение: retry видит replay для незавершённой операции.
-        """
+        """callback exception не оставляет половину идемпотентной mutation."""
         session = FakeTransactionalSession()
         service, _ = _service(session)
 
@@ -229,11 +221,7 @@ class TestAtomicExecution:
 
 class TestPreparationTransactionBoundary:
     async def test_find_existing_closes_read_transaction(self) -> None:
-        """
-        Проверяем: durable preflight SELECT не оставляет autobegin transaction.
-        Успех: после find_existing session свободна до внешнего preparation.
-        Нежелательное поведение: Pricing выполняется при открытой DB transaction.
-        """
+        """durable preflight SELECT не оставляет autobegin transaction."""
         session = FakeTransactionalSession()
         service, _ = _service(session)
 
@@ -246,29 +234,18 @@ class TestPreparationTransactionBoundary:
         assert session.in_transaction is False
         assert session.commits == 1
 
-    async def test_coordinator_prepares_only_after_read_transaction_closes(
+    async def test_coordinator_runs_callback_inside_durable_transaction(
         self,
     ) -> None:
-        """
-        Проверяем: replay preflight и external preparation разделены границей UoW.
-        Успех: prepare вне transaction, callback внутри новой durable transaction.
-        Нежелательное поведение: медленный Catalog удерживает соединение или row snapshot.
-        """
+        """The effect runs inside the transaction that stores its replay result."""
         session = FakeTransactionalSession()
         durable, _ = _service(session)
         coordinator = IdempotencyCoordinator(
             hot_store=None,
             durable_execution=durable,
         )
-        prepared = False
-
-        async def prepare() -> None:
-            nonlocal prepared
-            assert session.in_transaction is False
-            prepared = True
 
         async def operation() -> StoredResult:
-            assert prepared is True
             assert session.in_transaction is True
             stored = _stored()
             session.stage_effect({"order_id": stored.resource_id})
@@ -279,7 +256,6 @@ class TestPreparationTransactionBoundary:
             _request_hash(),
             operation=operation,
             lease_seconds=60,
-            prepare=prepare,
         )
 
         assert result.outcome is ExecutionOutcome.EXECUTED
@@ -289,11 +265,7 @@ class TestPreparationTransactionBoundary:
 
 class TestReplayAndConflict:
     async def test_existing_same_request_replays_without_callback(self) -> None:
-        """
-        Проверяем: повтор после потерянного ответа не повторяет business effect.
-        Успех: тот же request hash возвращает REPLAY без вызова callback.
-        Нежелательное поведение: клиентский retry повторно submit-ит заказ.
-        """
+        """повтор после потерянного ответа не повторяет business effect."""
         session = FakeTransactionalSession()
         identity = _identity()
         request_hash = _request_hash()
@@ -318,11 +290,7 @@ class TestReplayAndConflict:
         assert operation_called is False
 
     async def test_existing_different_request_is_conflict(self) -> None:
-        """
-        Проверяем: тот же scoped key нельзя переиспользовать с другим payload.
-        Успех: другой request hash возвращает CONFLICT без callback.
-        Нежелательное поведение: под старым ключом выполняется новая команда.
-        """
+        """тот же scoped key нельзя переиспользовать с другим payload."""
         session = FakeTransactionalSession()
         identity = _identity()
         session.records[identity] = _completed(_request_hash(1))
@@ -345,11 +313,7 @@ class TestReplayAndConflict:
         assert operation_called is False
 
     async def test_unique_race_rolls_back_loser_then_replays_winner(self) -> None:
-        """
-        Проверяем: два concurrent requests не коммитят два business effects.
-        Успех: loser откатывает callback, перечитывает winner и возвращает REPLAY.
-        Нежелательное поведение: ON CONFLICT скрывает уже выполненный второй effect.
-        """
+        """два concurrent requests не коммитят два business effects."""
         session = FakeTransactionalSession()
         identity = _identity()
         request_hash = _request_hash()
@@ -375,11 +339,7 @@ class TestReplayAndConflict:
         assert session.records[identity] == winner
 
     async def test_unique_race_with_other_payload_returns_conflict(self) -> None:
-        """
-        Проверяем: concurrent reuse ключа с другим payload не переигрывает winner.
-        Успех: loser rollback-ится и после reread получает CONFLICT.
-        Нежелательное поведение: разные команды считаются одним безопасным retry.
-        """
+        """concurrent reuse ключа с другим payload не переигрывает winner."""
         session = FakeTransactionalSession()
         identity = _identity()
         records = FakeIdempotencyRecordRepository(session)
@@ -404,11 +364,7 @@ class TestReplayAndConflict:
     async def test_operation_lock_race_rereads_committed_winner(
         self,
     ) -> None:
-        """
-        Проверяем: Redis-down race может проиграться до INSERT idempotency record.
-        Успех: stale-version callback rollback-ится и committed winner даёт REPLAY.
-        Нежелательное поведение: same-key concurrent retry случайно получает HTTP 412.
-        """
+        """Redis-down race может проиграться до INSERT idempotency record."""
         session = FakeTransactionalSession()
         identity = _identity()
         request_hash = _request_hash()

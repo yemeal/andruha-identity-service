@@ -3,6 +3,8 @@
 from collections.abc import MutableMapping
 import logging
 import logging.config
+import sys
+import traceback
 from typing import Any
 
 import structlog
@@ -36,6 +38,36 @@ def _service_context(settings: AppSettings | Settings):
     return add_service_context
 
 
+def _safe_exception_info(_logger: object, _method: str, event: EventDict) -> EventDict:
+    """Keep exception types and frames without messages, source code, or locals."""
+    info = event.pop("exc_info", None)
+    if not info:
+        return event
+    error = (
+        info
+        if isinstance(info, BaseException)
+        else (info[1] if isinstance(info, tuple) else sys.exc_info()[1])
+    )
+    chain: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    while isinstance(error, BaseException) and id(error) not in seen:
+        seen.add(id(error))
+        frames = [
+            {
+                "file": frame.f_code.co_filename,
+                "line": line,
+                "function": frame.f_code.co_name,
+            }
+            for frame, line in traceback.walk_tb(error.__traceback__)
+        ]
+        chain.append({"type": type(error).__name__, "frames": frames})
+        error = error.__cause__ or (
+            None if error.__suppress_context__ else error.__context__
+        )
+    event["exception_chain"] = chain
+    return event
+
+
 def setup_logging(settings: AppSettings | Settings | None = None) -> None:
     current_settings = (
         settings.app
@@ -43,6 +75,8 @@ def setup_logging(settings: AppSettings | Settings | None = None) -> None:
         else (settings or get_settings().app)
     )
     level = _log_level(current_settings)
+    # Stdlib formatter failures must not print the original exception to stderr.
+    logging.raiseExceptions = False
 
     shared_processors = [
         structlog.contextvars.merge_contextvars,
@@ -51,7 +85,7 @@ def setup_logging(settings: AppSettings | Settings | None = None) -> None:
         structlog.stdlib.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
+        _safe_exception_info,
     ]
     renderer = (
         structlog.dev.ConsoleRenderer()

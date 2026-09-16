@@ -1,10 +1,3 @@
-"""
-Маппинг доменных исключений на публичный HTTP-контракт.
-
-Handler не логирует и не принимает бизнес-решений. Для нескольких внутренних
-причин он может вернуть клиенту одну безопасную публичную ошибку.
-"""
-
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -14,16 +7,20 @@ from fastapi import FastAPI, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.application.exceptions.commands import InvalidCommandError
 from app.application.exceptions.idempotency import (
     IdempotencyKeyConflictError,
     IdempotencyRequestInProgressError,
     IdempotencyStorageUnavailableError,
     RefreshReplayUnavailableError,
 )
+from app.application.exceptions.profiles import ProfileProvisioningUnavailableError
+from app.application.exceptions.security import InvalidTokenError
 from app.domain.exceptions import (
     InvalidCredentialsError,
+    InvalidEmailError,
+    InvalidPasswordError,
     InvalidRefreshTokenError,
-    InvalidTokenError,
     UserAlreadyExistsError,
     UserNotFoundError,
 )
@@ -43,8 +40,23 @@ class HttpErrorSpec:
     headers: tuple[tuple[str, str], ...] = _NO_STORE_HEADERS
 
 
+_VALIDATION_ERROR_SPEC = HttpErrorSpec(
+    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+    code=AuthApiErrorCode.VALIDATION_ERROR,
+    detail="request validation failed",
+)
+
+
 _HTTP_ERROR_SPECS: Mapping[type[Exception], HttpErrorSpec] = MappingProxyType(
     {
+        InvalidCommandError: _VALIDATION_ERROR_SPEC,
+        InvalidEmailError: _VALIDATION_ERROR_SPEC,
+        InvalidPasswordError: _VALIDATION_ERROR_SPEC,
+        ProfileProvisioningUnavailableError: HttpErrorSpec(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code=AuthApiErrorCode.PROFILE_PROVISIONING_UNAVAILABLE,
+            detail="registration is temporarily unavailable",
+        ),
         RequestValidationError: HttpErrorSpec(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             code=AuthApiErrorCode.VALIDATION_ERROR,

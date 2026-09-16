@@ -23,8 +23,8 @@ from app.application.ports.dto.idempotency import (
     CompletedIdempotencyResult,
     StoredResult,
 )
-from app.application.services.durable_idempotency import DurableExecutionService
-from app.application.services.idempotency_fingerprint import (
+from app.application.idempotency.durable import DurableExecutionService
+from app.application.idempotency.fingerprint import (
     compute_request_hash,
     hash_idempotency_key,
 )
@@ -34,7 +34,7 @@ from app.application.value_objects.idempotency import (
     IdempotencyIdentity,
 )
 from app.core.settings import get_settings
-from app.domain.users import User
+from app.domain.aggregates.user import User
 from app.entrypoints.http.main import create_app
 from app.infrastructure.cache.valkey_idempotency_store import (
     ValkeyHotIdempotencyStore,
@@ -83,6 +83,7 @@ async def test_alembic_schema_matches_final_orm_metadata() -> None:
             "refresh_tokens",
             "idempotency_records",
             "outbox",
+            "registration_operations",
         }
     finally:
         await engine.dispose()
@@ -235,6 +236,7 @@ def test_refresh_canaries_never_enter_storage_logs_errors_or_metrics(
         with TestClient(create_app()) as client:
             register = client.post(
                 "/api/v1/auth/register",
+                headers={"Idempotency-Key": f"register-{uuid.uuid4()}"},
                 json={"email": email, "password": "Canary-password-123"},
             )
             assert register.status_code == 201

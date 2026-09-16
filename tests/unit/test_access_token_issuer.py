@@ -1,3 +1,9 @@
+from app.application.exceptions.security import (
+    InvalidTokenConfigurationError,
+    TokenIssuanceError,
+    InvalidTokenError,
+    InvalidTokenSigningKeyError,
+)
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -13,13 +19,7 @@ from app.application.ports.security import (
     AccessTokenVerifierProtocol,
 )
 from app.core.settings import Settings
-from app.domain.exceptions import (
-    InvalidTokenConfigurationError,
-    InvalidTokenDataError,
-    InvalidTokenError,
-    InvalidTokenSigningKeyError,
-)
-from app.domain.users import UserRole
+from app.domain.aggregates.user import UserRole
 from app.infrastructure.di import create_container
 from app.infrastructure.security.access_token_issuer import (
     PyJWTAccessTokenIssuer,
@@ -50,11 +50,7 @@ class TestPyJWTAccessTokenIssuer:
         self,
         private_key: RSAPrivateKey,
     ) -> None:
-        """
-        Проверяем: выпуск access JWT для аутентифицированного пользователя.
-        Успех: заголовок, подпись и обязательные claims имеют ожидаемые значения.
-        Нежелательное поведение: алгоритм изменен или в токен попало лишнее состояние.
-        """
+        """выпуск access JWT для аутентифицированного пользователя."""
         issuer = create_issuer(private_key)
         principal = AccessPrincipal(user_id=uuid4(), role=UserRole.ADMIN)
         now = datetime.now(UTC).replace(microsecond=0)
@@ -99,11 +95,7 @@ class TestPyJWTAccessTokenIssuer:
         self,
         private_key: RSAPrivateKey,
     ) -> None:
-        """
-        Проверяем: границу доверия между закрытым и публичным RSA-ключом.
-        Успех: публичный ключ другой пары не подтверждает подпись access-токена.
-        Нежелательное поведение: произвольный RSA-ключ принимает выпущенный токен.
-        """
+        """границу доверия между закрытым и публичным RSA-ключом."""
         token = create_issuer(private_key).issue(
             AccessPrincipal(user_id=uuid4(), role=UserRole.USER),
             datetime.now(UTC),
@@ -126,28 +118,20 @@ class TestPyJWTAccessTokenIssuer:
         self,
         private_key: RSAPrivateKey,
     ) -> None:
-        """
-        Проверяем: контракт времени выпуска access-токена.
-        Успех: issuer отклоняет datetime без часового пояса.
-        Нежелательное поведение: локальное время неявно принимается за UTC.
-        """
+        """контракт времени выпуска access-токена."""
         issuer = create_issuer(private_key)
         principal = AccessPrincipal(user_id=uuid4(), role=UserRole.USER)
 
-        with pytest.raises(InvalidTokenDataError) as captured:
+        with pytest.raises(TokenIssuanceError) as captured:
             issuer.issue(principal, datetime.now())
 
-        assert isinstance(captured.value, InvalidTokenError)
+        assert not isinstance(captured.value, InvalidTokenError)
 
     def test_rejects_invalid_issuer_configuration(
         self,
         private_key: RSAPrivateKey,
     ) -> None:
-        """
-        Проверяем: конфигурацию issuer до начала выпуска токенов.
-        Успех: пустой kid сообщает отдельную доменную ошибку конфигурации.
-        Нежелательное поведение: общий ValueError выходит из security-адаптера.
-        """
+        """конфигурацию issuer до начала выпуска токенов."""
         with pytest.raises(InvalidTokenConfigurationError) as captured:
             PyJWTAccessTokenIssuer(
                 private_key=private_key,
@@ -157,7 +141,7 @@ class TestPyJWTAccessTokenIssuer:
                 access_token_ttl=timedelta(minutes=15),
             )
 
-        assert isinstance(captured.value, InvalidTokenError)
+        assert not isinstance(captured.value, InvalidTokenError)
 
 
 class TestRSAPrivateKeyLoading:
@@ -166,11 +150,7 @@ class TestRSAPrivateKeyLoading:
         tmp_path,
         private_key: RSAPrivateKey,
     ) -> None:
-        """
-        Проверяем: загрузку закрытого RSA-ключа из PKCS8 PEM.
-        Успех: загруженный ключ соответствует исходной публичной части.
-        Нежелательное поведение: issuer получает непроверенную строку PEM.
-        """
+        """загрузку закрытого RSA-ключа из PKCS8 PEM."""
         private_key_path = tmp_path / "access-token.pem"
         private_key_path.write_bytes(
             private_key.private_bytes(
@@ -191,18 +171,14 @@ class TestRSAPrivateKeyLoading:
         self,
         tmp_path,
     ) -> None:
-        """
-        Проверяем: fail-fast при поврежденном закрытом ключе.
-        Успех: загрузка завершается безопасной конфигурационной ошибкой.
-        Нежелательное поведение: содержимое закрытого ключа попадает в сообщение ошибки.
-        """
+        """fail-fast при поврежденном закрытом ключе."""
         private_key_path = tmp_path / "access-token.pem"
         private_key_path.write_text("sensitive-invalid-private-key")
 
         with pytest.raises(InvalidTokenSigningKeyError) as captured:
             load_rsa_private_key(private_key_path)
 
-        assert isinstance(captured.value, InvalidTokenError)
+        assert not isinstance(captured.value, InvalidTokenError)
         assert isinstance(captured.value.__cause__, ValueError)
         assert "sensitive-invalid-private-key" not in str(captured.value)
 
@@ -214,11 +190,7 @@ class TestAccessTokenIssuerDI:
         private_key: RSAPrivateKey,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """
-        Проверяем: сборку issuer и verifier через настройки и Dishka.
-        Успех: APP scope загружает согласованную RSA-пару и проверяет свой токен.
-        Нежелательное поведение: ключи читаются вручную в application-слое.
-        """
+        """сборку issuer и verifier через настройки и Dishka."""
         private_key_path = tmp_path / "access-token.pem"
         public_key_path = tmp_path / "access-token-public.pem"
         private_key_path.write_bytes(
@@ -265,11 +237,7 @@ class TestAccessTokenIssuerDI:
         self,
         tmp_path,
     ) -> None:
-        """
-        Проверяем: валидацию JWT audience на границе настроек.
-        Успех: пустой audience сообщает доменную ошибку конфигурации токена.
-        Нежелательное поведение: Pydantic ValueError протекает в startup.
-        """
+        """валидацию JWT audience на границе настроек."""
         with pytest.raises(InvalidTokenConfigurationError) as captured:
             Settings(
                 DATABASE_HOST="localhost",
@@ -285,17 +253,13 @@ class TestAccessTokenIssuerDI:
                 JWT_AUDIENCES=" ",
             )
 
-        assert isinstance(captured.value, InvalidTokenError)
+        assert not isinstance(captured.value, InvalidTokenError)
 
     def test_settings_require_local_audience_in_issued_tokens(
         self,
         tmp_path,
     ) -> None:
-        """
-        Проверяем: согласованность audience локального verifier-а и issuer-а.
-        Успех: auth-service обязан входить в список получателей своих токенов.
-        Нежелательное поведение: сервис выпускает токен, который сам отклоняет.
-        """
+        """согласованность audience локального verifier-а и issuer-а."""
         with pytest.raises(InvalidTokenConfigurationError) as captured:
             Settings(
                 DATABASE_HOST="localhost",
@@ -312,4 +276,4 @@ class TestAccessTokenIssuerDI:
                 JWT_AUDIENCES="order-service",
             )
 
-        assert isinstance(captured.value, InvalidTokenError)
+        assert not isinstance(captured.value, InvalidTokenError)

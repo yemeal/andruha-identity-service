@@ -10,7 +10,7 @@ from app.application.exceptions.idempotency import (
     IdempotencyStorageUnavailableError,
 )
 from app.application.ports.dto.idempotency import CompletedIdempotencyResult
-from app.application.services.idempotency_fingerprint import (
+from app.application.idempotency.fingerprint import (
     compute_request_hash,
     hash_idempotency_key,
 )

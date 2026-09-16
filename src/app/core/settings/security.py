@@ -3,8 +3,8 @@ from typing import Literal, Self
 
 from pydantic import Field, field_validator, model_validator
 
+from app.application.exceptions.security import InvalidTokenConfigurationError
 from app.core.settings.base import BaseContextSettings
-from app.domain.exceptions import DomainErrors
 
 
 class SecuritySettings(BaseContextSettings):
@@ -88,7 +88,7 @@ class SecuritySettings(BaseContextSettings):
     @model_validator(mode="after")
     def validate_security_invariants(self) -> Self:
         if self.JWT_SERVICE_AUDIENCE not in self.JWT_AUDIENCES:
-            raise DomainErrors.Token.INVALID_CONFIGURATION()
+            raise InvalidTokenConfigurationError()
         if self.REPLAY_ENCRYPTION_ACTIVE_KEY_ID not in self.REPLAY_ENCRYPTION_KEY_PATHS:
             raise ValueError(
                 "active replay encryption key must be present in the key ring"

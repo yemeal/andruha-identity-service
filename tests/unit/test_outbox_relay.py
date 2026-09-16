@@ -24,7 +24,7 @@ from app.application.ports.outbox.scope_factory import (
 )
 from app.application.ports.repositories.outbox import OutboxRepositoryProtocol
 from app.application.ports.uow import AsyncUOWProtocol
-from app.application.services.outbox_relay import OutboxRelayService
+from app.application.outbox.relay import OutboxRelayService
 
 # =============================================================================
 # Test Doubles / Fakes

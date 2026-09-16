@@ -12,6 +12,10 @@ from app.application.exceptions.outbox import (
     RetryExhaustedError,
     TransientPublishError,
 )
+from app.application.exceptions.profiles import (
+    ProfileProvisioningRejectedError,
+    ProfileProvisioningUnavailableError,
+)
 
 __all__ = (
     "IdempotencyError",
@@ -20,6 +24,8 @@ __all__ = (
     "IdempotencyStorageUnavailableError",
     "OutboxError",
     "PermanentPublishError",
+    "ProfileProvisioningRejectedError",
+    "ProfileProvisioningUnavailableError",
     "PublishError",
     "RefreshReplayUnavailableError",
     "RetryExhaustedError",

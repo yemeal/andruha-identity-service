@@ -23,7 +23,7 @@ from app.application.exceptions.idempotency import (
     IdempotencyStorageUnavailableError,
 )
 from app.application.ports.dto.idempotency import CompletedIdempotencyResult
-from app.application.services.idempotency_fingerprint import (
+from app.application.idempotency.fingerprint import (
     compute_request_hash,
     hash_idempotency_key,
 )
@@ -116,11 +116,7 @@ class TestBeginDecisions:
         raw: list[int],
         expected: BeginAction,
     ) -> None:
-        """
-        Проверяем: begin переводит известные Lua-коды в entrypoint-neutral решение.
-        Успех: ACQUIRED, CONFLICT и IN_PROGRESS возвращаются без cached результата.
-        Нежелательное поведение: HTTP/Kafka слои вынуждены разбирать Redis-коды.
-        """
+        """begin переводит известные Lua-коды в entrypoint-neutral решение."""
         fake = FakeEvalRedis([raw])
 
         result = await _store(fake).begin(
@@ -134,11 +130,7 @@ class TestBeginDecisions:
         assert result.completed is None
 
     async def test_replay_decodes_json_safe_completed_result(self) -> None:
-        """
-        Проверяем: completed HASH восстанавливается из Redis bytes в общий result.
-        Успех: UUID, Decimal и datetime представлены JSON-safe значениями без потерь.
-        Нежелательное поведение: replay зависит от Python-объектов в Redis payload.
-        """
+        """completed HASH восстанавливается из Redis bytes в общий result."""
         completed = _completed()
         encoded = ValkeyHotIdempotencyStore._encode_completed(completed)
         fake = FakeEvalRedis([[2, encoded.encode("utf-8")]])
@@ -187,11 +179,7 @@ class TestBeginDecisions:
         self,
         raw: Any,
     ) -> None:
-        """
-        Проверяем: повреждённый Lua/HASH result не становится валидным replay.
-        Успех: corruption даёт StorageUnavailable для authoritative DB fallback.
-        Нежелательное поведение: optional Redis cache вызывает 500 или false success.
-        """
+        """повреждённый Lua/HASH result не становится валидным replay."""
         fake = FakeEvalRedis([raw])
 
         with pytest.raises(IdempotencyStorageUnavailableError):
@@ -218,11 +206,7 @@ class TestLuaCASAndTTL:
         script_name: str,
         argument_count: int,
     ) -> None:
-        """
-        Проверяем: Lua не читает отсутствующий ARGV и не делает CAS всегда false.
-        Успех: максимальный индекс ARGV не превышает число переданных аргументов.
-        Нежелательное поведение: heartbeat живого owner никогда не продлевает lease.
-        """
+        """Lua не читает отсутствующий ARGV и не делает CAS всегда false."""
         script = getattr(ValkeyHotIdempotencyStore, script_name)
         indexes = [int(value) for value in re.findall(r"ARGV\[(\d+)\]", script)]
 
@@ -234,11 +218,7 @@ class TestLuaCASAndTTL:
         self,
         result: int,
     ) -> None:
-        """
-        Проверяем: renew возвращает Lua CAS и передаёт новый lease TTL.
-        Успех: 1/0 становится True/False, owner и 90 секунд доходят до eval.
-        Нежелательное поведение: stale worker продлевает lease другого owner.
-        """
+        """renew возвращает Lua CAS и передаёт новый lease TTL."""
         owner = uuid.uuid4()
         fake = FakeEvalRedis([result])
 
@@ -258,11 +238,7 @@ class TestLuaCASAndTTL:
         self,
         result: int,
     ) -> None:
-        """
-        Проверяем: complete атомарно меняет только lease текущего owner.
-        Успех: CAS-код возвращён, result JSON-safe, replay TTL равен настройке.
-        Нежелательное поведение: stale owner перезаписывает committed cache.
-        """
+        """complete атомарно меняет только lease текущего owner."""
         owner = uuid.uuid4()
         completed = _completed()
         fake = FakeEvalRedis([result])
@@ -284,11 +260,7 @@ class TestLuaCASAndTTL:
         assert "owner == ARGV[1]" in arguments[0]
 
     def test_complete_script_compares_stored_and_result_hashes(self) -> None:
-        """
-        Проверяем: correct owner не может завершить lease с другим request hash.
-        Успех: Lua complete сравнивает HASH.request_hash с ARGV[4].
-        Нежелательное поведение: cached result относится к другому payload.
-        """
+        """correct owner не может завершить lease с другим request hash."""
         script = ValkeyHotIdempotencyStore._COMPLETE_SCRIPT
 
         assert "request_hash" in script
@@ -299,11 +271,7 @@ class TestLuaCASAndTTL:
         self,
         result: int,
     ) -> None:
-        """
-        Проверяем: abandon удаляет processing entry только по owner-token CAS.
-        Успех: Lua 1/0 становится True/False и eval получает текущий owner.
-        Нежелательное поведение: rollback одного worker удаляет чужой lease.
-        """
+        """abandon удаляет processing entry только по owner-token CAS."""
         owner = uuid.uuid4()
         fake = FakeEvalRedis([result])
 
@@ -315,11 +283,7 @@ class TestLuaCASAndTTL:
         assert "state == 'processing'" in fake.calls[0][0]
 
     async def test_begin_passes_owner_request_hash_and_lease_ttl(self) -> None:
-        """
-        Проверяем: новый processing HASH получает fingerprint, owner и lease TTL.
-        Успех: eval получает полный SHA-256 hex, token и 60 секунд одним вызовом.
-        Нежелательное поведение: lock создаётся без fingerprint или срока жизни.
-        """
+        """новый processing HASH получает fingerprint, owner и lease TTL."""
         owner = uuid.uuid4()
         request_hash = _request_hash()
         fake = FakeEvalRedis([[1]])
@@ -343,11 +307,7 @@ class TestStorageKeyPrivacy:
     async def test_storage_key_contains_only_namespace_and_scoped_digest(
         self,
     ) -> None:
-        """
-        Проверяем: Redis key не раскрывает PII, operation или raw client key.
-        Успех: после namespace находится только 64-символьный SHA-256 digest.
-        Нежелательное поведение: keyspace/log Redis раскрывает customer/key data.
-        """
+        """Redis key не раскрывает PII, operation или raw client key."""
         identity = _identity()
         fake = FakeEvalRedis([[1]])
 
@@ -371,11 +331,7 @@ class TestStorageKeyPrivacy:
     async def test_same_client_key_is_scoped_by_subject_and_operation(
         self,
     ) -> None:
-        """
-        Проверяем: одинаковый Idempotency-Key из разных scopes не делит HASH.
-        Успех: subject и operation изменяют Redis storage digest.
-        Нежелательное поведение: один клиент блокирует запрос другого клиента.
-        """
+        """одинаковый Idempotency-Key из разных scopes не делит HASH."""
         fake = FakeEvalRedis([[1], [1], [1]])
         store = _store(fake)
 
@@ -404,11 +360,7 @@ class TestValidationAndFailureMapping:
         ],
     )
     def test_rejects_invalid_store_configuration(self, factory: Any) -> None:
-        """
-        Проверяем: adapter не стартует с вечным/нулевым TTL или пустым namespace.
-        Успех: некорректная конфигурация немедленно отклоняется ValueError.
-        Нежелательное поведение: production создаёт бессрочные или общие ключи.
-        """
+        """adapter не стартует с вечным/нулевым TTL или пустым namespace."""
         with pytest.raises(ValueError):
             factory()
 
@@ -424,11 +376,7 @@ class TestValidationAndFailureMapping:
         request_hash: bytes,
         lease_seconds: int,
     ) -> None:
-        """
-        Проверяем: begin валидирует fingerprint и TTL до внешнего вызова.
-        Успех: invalid input даёт ValueError, fake eval не вызывается.
-        Нежелательное поведение: мусорный протокол создаёт частичный Redis HASH.
-        """
+        """begin валидирует fingerprint и TTL до внешнего вызова."""
         fake = FakeEvalRedis([])
 
         with pytest.raises(ValueError):
@@ -442,11 +390,7 @@ class TestValidationAndFailureMapping:
         assert fake.calls == []
 
     async def test_renew_validates_lease_before_redis(self) -> None:
-        """
-        Проверяем: heartbeat запрещает нулевой и отрицательный lease.
-        Успех: ValueError возникает до eval и состояние Redis не меняется.
-        Нежелательное поведение: EXPIRE 0 удаляет активный lock.
-        """
+        """heartbeat запрещает нулевой и отрицательный lease."""
         fake = FakeEvalRedis([])
 
         with pytest.raises(ValueError):
@@ -462,11 +406,7 @@ class TestValidationAndFailureMapping:
         self,
         method_name: str,
     ) -> None:
-        """
-        Проверяем: каждый Redis I/O failure имеет единый graceful-fallback error.
-        Успех: RedisError маппится в IdempotencyStorageUnavailableError с cause.
-        Нежелательное поведение: entrypoint знает redis-py exceptions.
-        """
+        """каждый Redis I/O failure имеет единый graceful-fallback error."""
         cause = redis.exceptions.ConnectionError("redis is down")
         store = _store(FakeEvalRedis([cause]))
 
@@ -492,11 +432,7 @@ class TestValidationAndFailureMapping:
         assert raised.value.__cause__ is cause
 
     async def test_programming_error_is_not_hidden_as_storage_outage(self) -> None:
-        """
-        Проверяем: graceful fallback ловит только redis-py RedisError.
-        Успех: unexpected ValueError пробрасывается без переименования в outage.
-        Нежелательное поведение: parser bug незаметно переводит трафик на БД.
-        """
+        """graceful fallback ловит только redis-py RedisError."""
         store = _store(FakeEvalRedis([ValueError("broken fake protocol")]))
 
         with pytest.raises(ValueError, match="broken fake protocol"):

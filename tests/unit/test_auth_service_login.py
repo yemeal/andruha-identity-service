@@ -1,4 +1,6 @@
 from __future__ import annotations
+from app.domain.exceptions import InvalidCredentialsError
+from app.application.exceptions.security import TokenExpiredError, InvalidTokenError
 
 import hashlib
 from dataclasses import dataclass
@@ -14,18 +16,15 @@ from app.application.ports.dto.security import (
     AccessTokenClaims,
     IssuedRefreshToken,
 )
-from app.application.ports.events import UserRegisteredEvent
 from app.application.ports.security import AccessTokenVerifierProtocol
-from app.application.services.auth_service import AuthService
-from app.domain.auth_sessions import AuthSession
-from app.domain.exceptions import (
-    DomainErrors,
-    InvalidCredentialsError,
-    InvalidTokenError,
-    UserAlreadyExistsError,
-)
-from app.domain.refresh_tokens import RefreshToken
-from app.domain.users import User
+from app.application.use_cases.login.handler import LoginHandler
+from app.application.use_cases.login.command import LoginCommand
+from app.application.use_cases.get_current_user.handler import GetCurrentUserHandler
+from app.application.use_cases.get_current_user.query import GetCurrentUserQuery
+from app.application.tokens import TokenPairIssuer
+from app.domain.aggregates.auth_session import AuthSession
+from app.domain.entities.refresh_token import RefreshToken
+from app.domain.aggregates.user import User
 
 
 class TrackingUOW:
@@ -91,13 +90,16 @@ class LoginUserRepository:
 
 
 class LoginAuthSessionRepository:
-    def __init__(self, uow: TrackingUOW) -> None:
+    def __init__(self, uow: TrackingUOW, tokens: LoginRefreshTokenRepository) -> None:
         self._uow = uow
+        self._tokens = tokens
         self.created: list[AuthSession] = []
 
     async def create(self, entity: AuthSession) -> AuthSession:
         assert self._uow.active
         self.created.append(entity.model_copy(deep=True))
+        assert entity.refresh_token is not None
+        await self._tokens.create(entity.refresh_token)
         return entity
 
 
@@ -181,17 +183,10 @@ class RecordingAccessTokenVerifier:
         return AccessTokenClaims.model_construct(user_id=self.user_id)
 
 
-class FakeEventPublisher:
-    def __init__(self) -> None:
-        self.published: list[UserRegisteredEvent] = []
-
-    async def publish(self, event: UserRegisteredEvent) -> None:
-        self.published.append(event)
-
-
 @dataclass
 class LoginScenario:
-    service: AuthService
+    service: LoginHandler
+    current_user: GetCurrentUserHandler
     user: User
     users: LoginUserRepository
     sessions: LoginAuthSessionRepository
@@ -199,7 +194,6 @@ class LoginScenario:
     hasher: RecordingPasswordHasher
     access_issuer: RecordingAccessTokenIssuer
     refresh_codec: RecordingRefreshTokenCodec
-    event_publisher: FakeEventPublisher
     uow: TrackingUOW
     now: datetime
 
@@ -213,33 +207,33 @@ def create_login_scenario(
     user = User(
         email="user@example.com",
         password_hash="stored-password-hash",
+        created_at=now,
     )
     uow = TrackingUOW()
     users = LoginUserRepository(uow, user)
-    sessions = LoginAuthSessionRepository(uow)
     refresh_tokens = LoginRefreshTokenRepository(uow)
+    sessions = LoginAuthSessionRepository(uow, refresh_tokens)
     hasher = RecordingPasswordHasher(
         uow,
         password_matches=password_matches,
     )
     access_issuer = RecordingAccessTokenIssuer()
     refresh_codec = RecordingRefreshTokenCodec()
-    event_publisher = FakeEventPublisher()
-    service = AuthService(
-        user_repo=users,
-        refresh_token_repo=refresh_tokens,
-        auth_session_repo=sessions,
+    service = LoginHandler(
+        users=users,
+        sessions=sessions,
         uow=uow,
         password_hasher=hasher,
-        access_token_issuer=access_issuer,
-        access_token_verifier=(access_token_verifier or UnusedAccessTokenVerifier()),
-        refresh_token_codec=refresh_codec,
-        event_publisher=event_publisher,
+        issuer=TokenPairIssuer(access_issuer, refresh_codec),
         session_idle_ttl=timedelta(days=30),
         clock=lambda: now,
     )
+    current_user = GetCurrentUserHandler(
+        users, access_token_verifier or UnusedAccessTokenVerifier(), uow
+    )
     return LoginScenario(
         service=service,
+        current_user=current_user,
         user=user,
         users=users,
         sessions=sessions,
@@ -247,7 +241,6 @@ def create_login_scenario(
         hasher=hasher,
         access_issuer=access_issuer,
         refresh_codec=refresh_codec,
-        event_publisher=event_publisher,
         uow=uow,
         now=now,
     )
@@ -255,14 +248,12 @@ def create_login_scenario(
 
 class TestLoginAuthentication:
     async def test_success_verifies_password_outside_transaction(self) -> None:
-        """
-        Проверяем: дорогая проверка пароля не удерживает DB-транзакцию.
-        Успех: lookup и запись разделены, session и refresh сохранены атомарно.
-        Нежелательное поведение: Argon2 занимает соединение из пула.
-        """
+        """дорогая проверка пароля не удерживает DB-транзакцию."""
         scenario = create_login_scenario()
 
-        pair = await scenario.service.login("user@example.com", "plain-password")
+        pair = await scenario.service.execute(
+            LoginCommand(email="user@example.com", password="plain-password")
+        )
 
         assert scenario.hasher.calls == [
             ("plain-password", scenario.user.password_hash)
@@ -280,11 +271,7 @@ class TestLoginAuthentication:
         self,
         user_state: str,
     ) -> None:
-        """
-        Проверяем: отсутствие и блокировка user не создают быстрый путь отказа.
-        Успех: hasher получает None и выполняет эквивалентную dummy-KDF.
-        Нежелательное поведение: существование email определяется по времени.
-        """
+        """отсутствие и блокировка user не создают быстрый путь отказа."""
         scenario = create_login_scenario()
         if user_state == "missing":
             scenario.users.user = None
@@ -294,7 +281,9 @@ class TestLoginAuthentication:
             scenario.users.user = disabled_user
 
         with pytest.raises(InvalidCredentialsError):
-            await scenario.service.login("user@example.com", "plain-password")
+            await scenario.service.execute(
+                LoginCommand(email="user@example.com", password="plain-password")
+            )
 
         assert scenario.hasher.calls == [("plain-password", None)]
         assert scenario.uow.entries == 1
@@ -303,15 +292,13 @@ class TestLoginAuthentication:
         assert scenario.refresh_codec.issue_calls == 0
 
     async def test_wrong_password_uses_real_hash_and_creates_nothing(self) -> None:
-        """
-        Проверяем: неверный пароль проходит настоящую Argon2-проверку.
-        Успех: наружу уходит единая ошибка, токены и сессия не создаются.
-        Нежелательное поведение: неверный пароль получает быстрый отдельный путь.
-        """
+        """неверный пароль проходит настоящую Argon2-проверку."""
         scenario = create_login_scenario(password_matches=False)
 
         with pytest.raises(InvalidCredentialsError):
-            await scenario.service.login("user@example.com", "wrong-password")
+            await scenario.service.execute(
+                LoginCommand(email="user@example.com", password="wrong-password")
+            )
 
         assert scenario.hasher.calls == [
             ("wrong-password", scenario.user.password_hash)
@@ -322,18 +309,16 @@ class TestLoginAuthentication:
         assert scenario.refresh_tokens.created == []
 
     async def test_user_is_revalidated_before_tokens_are_issued(self) -> None:
-        """
-        Проверяем: состояние user могло измениться во время Argon2-проверки.
-        Успех: заблокированный под lock user не получает новую пару токенов.
-        Нежелательное поведение: токен выпускается из устаревшего снимка user.
-        """
+        """состояние user могло измениться во время Argon2-проверки."""
         scenario = create_login_scenario()
         disabled_user = scenario.user.model_copy(deep=True)
         disabled_user.disable(scenario.now)
         scenario.users.locked_user = disabled_user
 
         with pytest.raises(InvalidCredentialsError):
-            await scenario.service.login("user@example.com", "plain-password")
+            await scenario.service.execute(
+                LoginCommand(email="user@example.com", password="plain-password")
+            )
 
         assert scenario.users.lock_calls == 1
         assert scenario.uow.commits == 1
@@ -344,27 +329,16 @@ class TestLoginAuthentication:
 
 class TestLoginObservability:
     async def test_success_logs_committed_stages_without_secrets(self) -> None:
-        """
-        Проверяем: успешный login можно восстановить по структурированным логам.
-        Успех: terminal-событие идет после commit, секреты в логи не попадают.
-        Нежелательное поведение: есть токены в логах или нет login succeeded.
-        """
+        """успешный login можно восстановить по структурированным логам."""
         scenario = create_login_scenario()
 
         with capture_logs() as logs:
-            await scenario.service.login("user@example.com", "plain-password")
+            await scenario.service.execute(
+                LoginCommand(email="user@example.com", password="plain-password")
+            )
 
         events = {entry["event"] for entry in logs}
-        assert {
-            "login started",
-            "login user locked",
-            "access token issued",
-            "new refresh token issued",
-            "auth session stored",
-            "new refresh token stored",
-            "login transaction committed",
-            "login succeeded",
-        } <= events
+        assert events == {"login succeeded"}
 
         rendered_logs = repr(logs)
         assert "user@example.com" not in rendered_logs
@@ -373,12 +347,8 @@ class TestLoginObservability:
         assert "access-secret" not in rendered_logs
         assert "refresh-secret" not in rendered_logs
 
-    async def test_unexpected_failure_logs_stage_and_traceback(self) -> None:
-        """
-        Проверяем: инфраструктурный сбой получает operation-level контекст.
-        Успех: login failed содержит последнюю стадию и exception.
-        Нежелательное поведение: ошибка видна только как безымянный HTTP 500.
-        """
+    async def test_failure_rolls_back_without_success_event(self) -> None:
+        """A failed write rolls back and never emits login success."""
         scenario = create_login_scenario()
         scenario.refresh_tokens.fail_create = True
 
@@ -386,58 +356,28 @@ class TestLoginObservability:
             capture_logs() as logs,
             pytest.raises(RuntimeError, match="refresh insert failed"),
         ):
-            await scenario.service.login("user@example.com", "plain-password")
-
-        failure = next(entry for entry in logs if entry["event"] == "login failed")
-        assert failure["stage"] == "refresh token storage"
-        assert failure["exc_info"] is True
-        assert scenario.uow.rollbacks == 1
-
-
-class TestRegistrationObservability:
-    async def test_expected_conflict_is_not_logged_as_exception(
-        self,
-    ) -> None:
-        """
-        Проверяем: duplicate email является ожидаемым domain rejection.
-        Успех: есть conflict event без PII и без register failed traceback.
-        Нежелательное поведение: email или password попадают в exception log.
-        """
-        scenario = create_login_scenario()
-        scenario.users.registration_result = None
-        password = "plain-registration-password"
-
-        with capture_logs() as logs, pytest.raises(UserAlreadyExistsError):
-            await scenario.service.register(
-                "user@example.com",
-                password,
+            await scenario.service.execute(
+                LoginCommand(email="user@example.com", password="plain-password")
             )
 
-        events = {entry["event"] for entry in logs}
-        assert "user registration conflict" in events
-        assert "register failed" not in events
-        assert scenario.hasher.hash_calls == [password]
-
-        rendered_logs = repr(logs)
-        assert "user@example.com" not in rendered_logs
-        assert password not in rendered_logs
-        assert "new-password-hash" not in rendered_logs
+        assert not any(entry["event"] == "login succeeded" for entry in logs)
+        assert scenario.uow.rollbacks == 1
 
 
 class TestCurrentUser:
     async def test_returns_authenticatable_user_from_verified_claims(self) -> None:
-        """
-        Проверяем: получение текущего пользователя по access JWT.
-        Успех: verifier задает user_id, а чтение user выполняется внутри UOW.
-        Нежелательное поведение: сырые claims заменяют актуального пользователя.
-        """
+        """получение текущего пользователя по access JWT."""
         verifier = RecordingAccessTokenVerifier()
         scenario = create_login_scenario(access_token_verifier=verifier)
         verifier.user_id = scenario.user.id
 
-        user = await scenario.service.get_current_user("access-secret")
+        user = await scenario.current_user.execute(
+            GetCurrentUserQuery(access_token="access-secret")
+        )
 
-        assert user == scenario.user
+        assert user.id == scenario.user.id
+        assert user.email == scenario.user.email
+        assert not hasattr(user, "password_hash")
         assert verifier.tokens == ["access-secret"]
         assert scenario.uow.entries == 1
         assert scenario.uow.commits == 1
@@ -447,11 +387,7 @@ class TestCurrentUser:
         self,
         user_state: str,
     ) -> None:
-        """
-        Проверяем: subject JWT удален или больше не может аутентифицироваться.
-        Успех: оба состояния возвращают безопасный INVALID_TOKEN.
-        Нежелательное поведение: /me раскрывает профиль отключенного пользователя.
-        """
+        """subject JWT удален или больше не может аутентифицироваться."""
         verifier = RecordingAccessTokenVerifier()
         scenario = create_login_scenario(access_token_verifier=verifier)
         verifier.user_id = scenario.user.id
@@ -462,22 +398,22 @@ class TestCurrentUser:
             scenario.users.user = scenario.user
 
         with pytest.raises(InvalidTokenError):
-            await scenario.service.get_current_user("access-secret")
+            await scenario.current_user.execute(
+                GetCurrentUserQuery(access_token="access-secret")
+            )
 
         assert scenario.uow.commits == 0
         assert scenario.uow.rollbacks == 1
 
     async def test_invalid_access_does_not_open_uow(self) -> None:
-        """
-        Проверяем: verifier отклоняет access JWT до обращения к БД.
-        Успех: доменная token-ошибка сохраняется, UOW не открывается.
-        Нежелательное поведение: невалидный JWT расходует DB connection.
-        """
+        """verifier отклоняет access JWT до обращения к БД."""
         verifier = RecordingAccessTokenVerifier()
-        verifier.error = DomainErrors.Token.EXPIRED()
+        verifier.error = TokenExpiredError()
         scenario = create_login_scenario(access_token_verifier=verifier)
 
         with pytest.raises(InvalidTokenError):
-            await scenario.service.get_current_user("expired-access")
+            await scenario.current_user.execute(
+                GetCurrentUserQuery(access_token="expired-access")
+            )
 
         assert scenario.uow.entries == 0

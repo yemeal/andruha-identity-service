@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +26,7 @@ from testcontainers.community.redis import RedisContainer
 
 from app.core.settings import get_settings
 from app.entrypoints.http.main import create_app
+from tests.integration.profile_server import ProfilePeer, serve_profile_peer
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +37,7 @@ class IdentityInfrastructure:
     jwt_public_key_path: Path
     replay_key_path: Path
     managed_by_testcontainers: bool
+    environment: Mapping[str, str]
 
 
 def _split_database_url(url: str) -> dict[str, str]:
@@ -84,7 +86,7 @@ def _write_test_keys(directory: Path) -> tuple[Path, Path, Path]:
     return private_path, public_path, replay_path
 
 
-def _set_environment(values: dict[str, str]) -> dict[str, str | None]:
+def _set_environment(values: Mapping[str, str]) -> dict[str, str | None]:
     previous = {key: os.environ.get(key) for key in values}
     os.environ.update(values)
     get_settings.cache_clear()
@@ -119,6 +121,7 @@ def identity_infrastructure(
     external_database_url = os.getenv("IDENTITY_TEST_DATABASE_URL")
     external_valkey_url = os.getenv("IDENTITY_TEST_VALKEY_URL")
     with ExitStack() as stack:
+        profile_url = stack.enter_context(serve_profile_peer(_profile_peer))
         managed = not (external_database_url and external_valkey_url)
         if managed:
             postgres = stack.enter_context(
@@ -145,6 +148,10 @@ def identity_infrastructure(
         assert database_url is not None
         assert valkey_url is not None
         environment = {
+            "PROFILE_SERVICE_URL": profile_url,
+            "PROFILE_SERVICE_TOKEN": "integration-profile-token",
+            "PROFILE_SERVICE_TIMEOUT_SECONDS": "1",
+            "PROFILE_SERVICE_RETRY_DELAY_SECONDS": "0",
             **_split_database_url(database_url),
             **_split_valkey_url(valkey_url),
             "IDENTITY_TEST_DATABASE_URL": database_url,
@@ -163,16 +170,32 @@ def identity_infrastructure(
         previous = _set_environment(environment)
         try:
             _upgrade_database()
-            yield IdentityInfrastructure(
-                database_url=get_settings().postgres.DATABASE_URL,
-                valkey_url=get_settings().valkey.VALKEY_URL,
+            settings = get_settings()
+            infrastructure = IdentityInfrastructure(
+                database_url=settings.postgres.DATABASE_URL,
+                valkey_url=settings.valkey.VALKEY_URL,
                 jwt_private_key_path=keys[0],
                 jwt_public_key_path=keys[1],
                 replay_key_path=keys[2],
                 managed_by_testcontainers=managed,
+                environment=environment,
             )
         finally:
             _restore_environment(previous)
+        yield infrastructure
+
+
+@pytest.fixture(autouse=True)
+def identity_test_environment(
+    identity_infrastructure: IdentityInfrastructure,
+) -> Iterator[None]:
+    """Expose integration settings only while an integration test is running."""
+
+    previous = _set_environment(identity_infrastructure.environment)
+    try:
+        yield
+    finally:
+        _restore_environment(previous)
 
 
 async def _truncate_state(infrastructure: IdentityInfrastructure) -> None:
@@ -183,7 +206,7 @@ async def _truncate_state(infrastructure: IdentityInfrastructure) -> None:
             await connection.execute(
                 text(
                     "TRUNCATE TABLE idempotency_records, refresh_tokens, "
-                    "auth_sessions, users, outbox CASCADE"
+                    "auth_sessions, users, outbox, registration_operations CASCADE"
                 )
             )
         await valkey.flushdb()
@@ -211,6 +234,19 @@ def identity_client(
     with TestClient(create_app(), base_url="https://testserver") as client:
         yield client
     get_settings.cache_clear()
+
+
+_profile_peer = ProfilePeer()
+
+
+@pytest.fixture
+def profile_peer() -> Iterator[ProfilePeer]:
+    _profile_peer.requests.clear()
+    try:
+        yield _profile_peer
+    finally:
+        _profile_peer.status = 204
+        _profile_peer.requests.clear()
 
 
 @pytest.fixture

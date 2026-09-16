@@ -2,7 +2,11 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from secrets import randbelow
 
+from argon2.exceptions import HashingError
 from pwdlib import PasswordHash
+from pwdlib.exceptions import UnknownHashError
+
+from app.application.exceptions.security import PasswordHashingError
 
 
 class Argon2PasswordHasher:
@@ -47,16 +51,20 @@ class Argon2PasswordHasher:
     async def hash(self, password: str) -> str:
         await self._sleep_jitter()
         async with self._semaphore:
-            return await asyncio.to_thread(self._hasher.hash, password)
+            try:
+                return await asyncio.to_thread(self._hasher.hash, password)
+            except (HashingError, ValueError, RuntimeError) as error:
+                raise PasswordHashingError() from error
 
     async def verify(self, password: str, password_hash: str) -> bool:
         await self._sleep_jitter()
         async with self._semaphore:
-            return await asyncio.to_thread(
-                self._hasher.verify,
-                password,
-                password_hash,
-            )
+            try:
+                return await asyncio.to_thread(
+                    self._hasher.verify, password, password_hash
+                )
+            except (UnknownHashError, ValueError, RuntimeError) as error:
+                raise PasswordHashingError() from error
 
     async def verify_or_dummy(
         self,

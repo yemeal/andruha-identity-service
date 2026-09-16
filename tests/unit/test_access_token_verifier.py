@@ -1,3 +1,11 @@
+from app.application.exceptions.security import (
+    InvalidTokenConfigurationError,
+    InvalidTokenDataError,
+    InvalidTokenError,
+    InvalidTokenSigningKeyError,
+    TokenExpiredError,
+    TokenMalformedError,
+)
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -9,15 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from pydantic import ValidationError
 
 from app.application.ports.dto.security import AccessPrincipal
-from app.domain.exceptions import (
-    InvalidTokenConfigurationError,
-    InvalidTokenDataError,
-    InvalidTokenError,
-    InvalidTokenSigningKeyError,
-    TokenExpiredError,
-    TokenMalformedError,
-)
-from app.domain.users import UserRole
+from app.domain.aggregates.user import UserRole
 from app.infrastructure.security.access_token_issuer import (
     PyJWTAccessTokenIssuer,
 )
@@ -95,11 +95,7 @@ class TestPyJWTAccessTokenVerifier:
         self,
         private_key: RSAPrivateKey,
     ) -> None:
-        """
-        Проверяем: полный путь issuer -> verifier для access JWT.
-        Успех: подпись и claims проверены и возвращены типизированным DTO.
-        Нежелательное поведение: наружу выходит сырой payload или теряются поля.
-        """
+        """полный путь issuer -> verifier для access JWT."""
         now = datetime.now(UTC).replace(microsecond=0)
         principal = AccessPrincipal(user_id=uuid4(), role=UserRole.ADMIN)
         token = create_issuer(private_key).issue(principal, now)
@@ -118,11 +114,7 @@ class TestPyJWTAccessTokenVerifier:
         self,
         private_key: RSAPrivateKey,
     ) -> None:
-        """
-        Проверяем: допустимую строковую форму JWT audience.
-        Успех: Pydantic нормализует одну строку в frozenset.
-        Нежелательное поведение: verifier поддерживает только массив от своего issuer-а.
-        """
+        """допустимую строковую форму JWT audience."""
         payload = create_payload(datetime.now(UTC))
         payload["aud"] = AUDIENCE
         token = encode_rs256(private_key, payload)
@@ -144,11 +136,7 @@ class TestPyJWTAccessTokenVerifier:
         issuer: str,
         audiences: list[str],
     ) -> None:
-        """
-        Проверяем: привязку токена к доверенному issuer и текущему сервису.
-        Успех: корректно подписанный, но чужой токен отклоняется.
-        Нежелательное поведение: один сервис принимает токен другого audience.
-        """
+        """привязку токена к доверенному issuer и текущему сервису."""
         payload = create_payload(datetime.now(UTC))
         payload["iss"] = issuer
         payload["aud"] = audiences
@@ -173,11 +161,7 @@ class TestPyJWTAccessTokenVerifier:
         key_id: str,
         token_type: str,
     ) -> None:
-        """
-        Проверяем: локальный выбор ключа по kid и явный тип access-токена.
-        Успех: неизвестный ключ и другой typ отклоняются до чтения claims.
-        Нежелательное поведение: header управляет ключом вне доверенного key ring.
-        """
+        """локальный выбор ключа по kid и явный тип access-токена."""
         token = encode_rs256(
             private_key,
             create_payload(datetime.now(UTC)),
@@ -194,11 +178,7 @@ class TestPyJWTAccessTokenVerifier:
         self,
         private_key: RSAPrivateKey,
     ) -> None:
-        """
-        Проверяем: защиту от подмены жестко заданного RS256.
-        Успех: валидный HS256 JWT не принимается RSA-verifier-ом.
-        Нежелательное поведение: значение alg из header выбирает алгоритм проверки.
-        """
+        """защиту от подмены жестко заданного RS256."""
         token = jwt.encode(
             create_payload(datetime.now(UTC)),
             "attacker-controlled-secret-with-enough-test-entropy",
@@ -213,11 +193,7 @@ class TestPyJWTAccessTokenVerifier:
         self,
         private_key: RSAPrivateKey,
     ) -> None:
-        """
-        Проверяем: криптографическую подпись выбранным публичным ключом.
-        Успех: токен другой RSA-пары сообщает доменную ошибку.
-        Нежелательное поведение: совпадения kid достаточно для доверия токену.
-        """
+        """криптографическую подпись выбранным публичным ключом."""
         another_key = rsa.generate_private_key(
             public_exponent=65537,
             key_size=2048,
@@ -236,11 +212,7 @@ class TestPyJWTAccessTokenVerifier:
         self,
         private_key: RSAPrivateKey,
     ) -> None:
-        """
-        Проверяем: истечение короткоживущего access-токена.
-        Успех: exp в прошлом сообщает TokenExpiredError.
-        Нежелательное поведение: просроченный токен возвращает claims.
-        """
+        """истечение короткоживущего access-токена."""
         payload = create_payload(datetime.now(UTC) - timedelta(hours=1))
         token = encode_rs256(private_key, payload)
 
@@ -259,11 +231,7 @@ class TestPyJWTAccessTokenVerifier:
         private_key: RSAPrivateKey,
         missing_claim: str,
     ) -> None:
-        """
-        Проверяем: обязательность каждого access claim по отдельности.
-        Успех: неполный токен отклоняется библиотечной проверкой require.
-        Нежелательное поведение: отсутствующее поле получает неявный default.
-        """
+        """обязательность каждого access claim по отдельности."""
         payload = create_payload(datetime.now(UTC))
         del payload[missing_claim]
         token = encode_rs256(private_key, payload)
@@ -280,11 +248,7 @@ class TestPyJWTAccessTokenVerifier:
         self,
         private_key: RSAPrivateKey,
     ) -> None:
-        """
-        Проверяем: ограниченный clock skew при проверке exp.
-        Успех: 15 секунд принимаются при leeway=30 и отклоняются при leeway=5.
-        Нежелательное поведение: leeway игнорируется или делает TTL бессрочным.
-        """
+        """ограниченный clock skew при проверке exp."""
         now = datetime.now(UTC)
         payload = create_payload(now - timedelta(minutes=10))
         payload["exp"] = now - timedelta(seconds=15)
@@ -323,11 +287,7 @@ class TestPyJWTAccessTokenVerifier:
         claim_name: str,
         invalid_value: str,
     ) -> None:
-        """
-        Проверяем: доменную нормализацию идентификаторов и роли.
-        Успех: подписанный payload с неверным типизированным полем отклоняется.
-        Нежелательное поведение: непроверенная строка попадает в application-слой.
-        """
+        """доменную нормализацию идентификаторов и роли."""
         payload = create_payload(datetime.now(UTC))
         payload[claim_name] = invalid_value
         token = encode_rs256(private_key, payload)
@@ -342,11 +302,7 @@ class TestPyJWTAccessTokenVerifier:
         self,
         private_key: RSAPrivateKey,
     ) -> None:
-        """
-        Проверяем: fail-fast для пустого key ring verifier-а.
-        Успех: ошибка конфигурации возникает до обработки запросов.
-        Нежелательное поведение: сервис запускается без доверенного ключа.
-        """
+        """fail-fast для пустого key ring verifier-а."""
         with pytest.raises(InvalidTokenConfigurationError) as captured:
             PyJWTAccessTokenVerifier(
                 public_keys={},
@@ -354,7 +310,7 @@ class TestPyJWTAccessTokenVerifier:
                 audience=AUDIENCE,
             )
 
-        assert isinstance(captured.value, InvalidTokenError)
+        assert not isinstance(captured.value, InvalidTokenError)
 
 
 class TestAccessTokenKeyRotation:
@@ -362,11 +318,7 @@ class TestAccessTokenKeyRotation:
         self,
         private_key: RSAPrivateKey,
     ) -> None:
-        """
-        Проверяем: окно перекрытия при ротации публичных RSA-ключей.
-        Успех: оба kid работают вместе, после удаления старого работает только новый.
-        Нежелательное поведение: смена ключа ломает живые JWT или старый ключ не удаляется.
-        """
+        """окно перекрытия при ротации публичных RSA-ключей."""
         new_private_key = rsa.generate_private_key(
             public_exponent=65537,
             key_size=2048,
@@ -424,11 +376,7 @@ class TestRSAPublicKeyLoading:
         tmp_path,
         private_key: RSAPrivateKey,
     ) -> None:
-        """
-        Проверяем: загрузку публичного PEM и согласованной RSA-пары.
-        Успех: оба загрузчика возвращают тот же публичный ключ.
-        Нежелательное поведение: файлы используются без проверки типа и пары.
-        """
+        """загрузку публичного PEM и согласованной RSA-пары."""
         private_path = tmp_path / "private.pem"
         public_path = tmp_path / "public.pem"
         private_path.write_bytes(
@@ -456,11 +404,7 @@ class TestRSAPublicKeyLoading:
         tmp_path,
         private_key: RSAPrivateKey,
     ) -> None:
-        """
-        Проверяем: согласованность закрытого и распространяемого публичного ключа.
-        Успех: пара из разных RSA-ключей останавливает запуск.
-        Нежелательное поведение: issuer выпускает токены, которые никто не проверит.
-        """
+        """согласованность закрытого и распространяемого публичного ключа."""
         another_key = rsa.generate_private_key(
             public_exponent=65537,
             key_size=2048,
@@ -484,4 +428,4 @@ class TestRSAPublicKeyLoading:
         with pytest.raises(InvalidTokenSigningKeyError) as captured:
             load_rsa_key_pair(private_path, public_path)
 
-        assert isinstance(captured.value, InvalidTokenError)
+        assert not isinstance(captured.value, InvalidTokenError)

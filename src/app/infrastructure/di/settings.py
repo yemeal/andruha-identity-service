@@ -7,6 +7,8 @@ from app.core.settings import (
     KafkaSettings,
     OutboxSettings,
     PostgresSettings,
+    ProfileServiceSettings,
+    RegistrationSettings,
     SecuritySettings,
     Settings,
     ValkeySettings,
@@ -48,3 +50,11 @@ class SettingsProvider(Provider):
     @dishka.provide
     def idempotency_settings(self, settings: Settings) -> IdempotencySettings:
         return settings.idempotency
+
+    @dishka.provide
+    def profile_service_settings(self, settings: Settings) -> ProfileServiceSettings:
+        return settings.profile_service
+
+    @dishka.provide
+    def registration_settings(self, settings: Settings) -> RegistrationSettings:
+        return settings.registration

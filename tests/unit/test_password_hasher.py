@@ -37,11 +37,7 @@ def create_hasher(
 
 class TestArgon2PasswordHasherConstantWork:
     async def test_missing_hash_runs_dummy_argon2_and_returns_false(self) -> None:
-        """
-        Проверяем: неизвестный user всё равно оплачивает Argon2-работу.
-        Успех: вызывается hash, результат проверки всегда False.
-        Нежелательное поведение: None создает быстрый timing-oracle.
-        """
+        """неизвестный user всё равно оплачивает Argon2-работу."""
         sleeps: list[float] = []
 
         async def record_sleep(delay: float) -> None:
@@ -60,11 +56,7 @@ class TestArgon2PasswordHasherConstantWork:
         assert sleeps == [0.08]
 
     async def test_real_hash_runs_verify_with_random_jitter(self) -> None:
-        """
-        Проверяем: обычная проверка получает тот же случайный jitter.
-        Успех: задержка лежит в заданном диапазоне, затем вызывается verify.
-        Нежелательное поведение: jitter применяется только к dummy-пути.
-        """
+        """обычная проверка получает тот же случайный jitter."""
         sleeps: list[float] = []
 
         async def record_sleep(delay: float) -> None:
@@ -96,14 +88,34 @@ class TestArgon2PasswordHasherConstantWork:
         maximum: int,
         message: str,
     ) -> None:
-        """
-        Проверяем: лимиты KDF валидируются при старте.
-        Успех: нулевая конкуренция и неверный jitter отклоняются.
-        Нежелательное поведение: неверная конфигурация проявляется в запросе.
-        """
+        """лимиты KDF валидируются при старте."""
         with pytest.raises(ValueError, match=message):
             Argon2PasswordHasher(
                 max_concurrency=max_concurrency,
                 jitter_min_ms=minimum,
                 jitter_max_ms=maximum,
             )
+
+
+async def test_argon2_failure_uses_application_exception(monkeypatch) -> None:
+    from argon2.exceptions import HashingError
+    from app.application.exceptions.security import PasswordHashingError
+
+    adapter = Argon2PasswordHasher(jitter_min_ms=0, jitter_max_ms=0)
+
+    def fail(*args, **kwargs):
+        raise HashingError("sensitive-input")
+
+    monkeypatch.setattr(adapter._hasher, "hash", fail)
+    with pytest.raises(PasswordHashingError) as captured:
+        await adapter.hash("password")
+    assert "sensitive-input" not in str(captured.value)
+
+
+async def test_unknown_stored_hash_is_a_service_failure() -> None:
+    from app.application.exceptions.security import PasswordHashingError
+
+    adapter = Argon2PasswordHasher(jitter_min_ms=0, jitter_max_ms=0)
+    with pytest.raises(PasswordHashingError) as captured:
+        await adapter.verify("password", "sensitive-invalid-hash")
+    assert "sensitive-invalid-hash" not in str(captured.value)
