@@ -72,9 +72,12 @@ class RegisterUserHandler:
         )
 
         async with self._scope_factory() as scope, scope.uow:
-            if await scope.users.get_by_email(email) is not None:
-                raise UserAlreadyExistsError()
-            created = await scope.registrations.try_create(candidate)
+            user = await scope.users.get_by_email(email)
+            created = (
+                await scope.registrations.try_create(candidate)
+                if user is None
+                else None
+            )
 
         if created is None:
             existing = await self._load_by_key(key_hash)

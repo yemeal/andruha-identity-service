@@ -500,6 +500,34 @@ async def test_completed_key_replays_without_second_profile_call() -> None:
     assert len(scenario.profile.calls) == 1
 
 
+async def test_same_key_replays_when_registration_completes_during_password_hashing() -> (
+    None
+):
+    scenario = make_scenario()
+    command = RegisterUserCommand(
+        email="new@example.com", password="password", key_hash=key_hash()
+    )
+    completed = []
+
+    class RacingHasher(Hasher):
+        async def hash(self, password: str) -> str:
+            completed.append(await scenario.coordinator.execute(command))
+            return await super().hash(password)
+
+    concurrent = RegisterUserHandler(
+        scope_factory=scenario.scope_factory,
+        password_hasher=RacingHasher(),
+        resume=scenario.resume,
+        claim_lease_seconds=30,
+        clock=lambda: scenario.now,
+    )
+    result = await concurrent.execute(command)
+
+    assert result == completed[0]
+    assert len(scenario.store.users) == len(scenario.store.events) == 1
+    assert len(scenario.profile.calls) == 1
+
+
 async def test_same_key_with_different_password_conflicts() -> None:
     scenario = make_scenario()
     await scenario.coordinator.execute(
