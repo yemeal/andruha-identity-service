@@ -113,7 +113,7 @@ class RegistrationOperationRepository(
                 terminal_at=None,
             )
             .returning(RegistrationOperationORM)
-            .execution_options(synchronize_session=False)
+            .execution_options(synchronize_session=False, populate_existing=True)
         )
         result = await self._session.execute(statement)
         rows = list(result.scalars().all())
@@ -260,7 +260,7 @@ class RegistrationOperationRepository(
                 terminal_at=None,
             )
             .returning(RegistrationOperationORM)
-            .execution_options(synchronize_session=False)
+            .execution_options(synchronize_session=False, populate_existing=True)
         )
         result = await self._session.execute(statement)
         row = result.scalar_one_or_none()
