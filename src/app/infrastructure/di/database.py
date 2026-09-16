@@ -23,6 +23,7 @@ class DatabaseAppProvider(Provider):
         engine = create_async_engine(
             settings.DATABASE_URL,
             pool_pre_ping=True,
+            hide_parameters=True,
             pool_size=settings.DATABASE_POOL_SIZE,
             max_overflow=settings.DATABASE_MAX_OVERFLOW,
             pool_timeout=settings.DATABASE_POOL_TIMEOUT,

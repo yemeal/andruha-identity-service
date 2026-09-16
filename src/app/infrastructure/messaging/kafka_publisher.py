@@ -57,7 +57,7 @@ class FastStreamKafkaPublisher:
         except ValueError as error:
             log.error(
                 "kafka_invalid_payload_error",
-                error=str(error),
+                error_type=type(error).__name__,
             )
             raise PermanentPublishError(
                 f"Invalid payload for message {message.id}: {error}"

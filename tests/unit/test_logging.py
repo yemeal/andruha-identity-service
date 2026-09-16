@@ -54,3 +54,41 @@ def test_setup_logging_configures_root_and_muted_loggers(dev_logs: bool) -> None
     assert logging.getLogger("chatty.child").level == logging.WARNING
     assert logging.getLogger("sqlalchemy.engine.Engine").level == logging.WARNING
     assert logging.getLogger("chatty").propagate is True
+
+
+@pytest.mark.parametrize("dev_logs", [True, False])
+@pytest.mark.parametrize("stdlib", [True, False])
+def test_exception_chains_exclude_messages_parameters_and_validation_input(
+    dev_logs, stdlib, capsys
+) -> None:
+    import structlog
+    from pydantic import BaseModel, ValidationError
+    from sqlalchemy.exc import IntegrityError
+
+    class Input(BaseModel):
+        count: int
+
+    marker = "private-canary-31982"
+    setup_logging(make_settings(dev_logs=dev_logs))
+    try:
+        try:
+            Input(count=marker)
+        except ValidationError as error:
+            raise IntegrityError(
+                "INSERT secret", {"password_hash": marker}, error
+            ) from error
+    except IntegrityError as error:
+        try:
+            raise RuntimeError(marker) from error
+        except RuntimeError:
+            if stdlib:
+                logging.getLogger("safety-test").exception("operation failed")
+            else:
+                structlog.get_logger("safety-test").exception("operation failed")
+    output = capsys.readouterr().err
+    assert marker not in output
+    assert "INSERT secret" not in output
+    assert "IntegrityError" in output
+    assert "ValidationError" in output
+    assert "RuntimeError" in output
+    assert "test_exception_chains" in output
