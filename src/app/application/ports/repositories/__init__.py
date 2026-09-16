@@ -11,6 +11,9 @@ from app.application.ports.repositories.outbox import (
 from app.application.ports.repositories.refresh_tokens import (
     RefreshTokenRepositoryProtocol,
 )
+from app.application.ports.repositories.registration_operations import (
+    RegistrationOperationRepositoryProtocol,
+)
 from app.application.ports.repositories.users import UserRepositoryProtocol
 
 __all__ = (
@@ -19,5 +22,6 @@ __all__ = (
     "IdempotencyRecordRepositoryProtocol",
     "OutboxRepositoryProtocol",
     "RefreshTokenRepositoryProtocol",
+    "RegistrationOperationRepositoryProtocol",
     "UserRepositoryProtocol",
 )

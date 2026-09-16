@@ -1,6 +1,5 @@
 from collections.abc import Callable
 from datetime import datetime, timedelta
-from time import perf_counter
 from typing import Protocol
 from uuid import UUID
 
@@ -9,7 +8,6 @@ import structlog
 from structlog.typing import FilteringBoundLogger
 
 from app.application.ports.dto import AccessPrincipal
-from app.application.ports.events import EventPublisherProtocol, UserRegisteredEvent
 from app.application.ports.repositories import (
     AuthSessionRepositoryProtocol,
     RefreshTokenRepositoryProtocol,
@@ -73,8 +71,6 @@ class _LockedTokenFamily(BaseModel):
 
 
 class AuthServiceProtocol(Protocol):
-    async def register(self, email: NormalizedEmail, password: str) -> User: ...
-
     async def login(self, email: NormalizedEmail, password: str) -> TokenPair: ...
 
     async def logout(self, refresh_token: str) -> None: ...
@@ -93,7 +89,6 @@ class AuthService:
         access_token_issuer: AccessTokenIssuerProtocol,
         access_token_verifier: AccessTokenVerifierProtocol,
         refresh_token_codec: OpaqueRefreshTokenCodecProtocol,
-        event_publisher: EventPublisherProtocol[UserRegisteredEvent],
         session_idle_ttl: timedelta | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
@@ -105,7 +100,6 @@ class AuthService:
         self._access_token_issuer = access_token_issuer
         self._access_token_verifier = access_token_verifier
         self._refresh_token_codec = refresh_token_codec
-        self._event_publisher = event_publisher
         self._session_idle_ttl = (
             session_idle_ttl if session_idle_ttl is not None else timedelta(days=30)
         )
@@ -223,46 +217,6 @@ class AuthService:
         auth_session.revoke(now)
         await self._auth_session_repo.update(auth_session)
         return True
-
-    async def register(self, email: NormalizedEmail, password: str) -> User:
-        """
-        Флоу таков:
-            - хешируем пароль в отдельном потоке, не блокируя event loop
-            - создаем пользователя через INSERT ON CONFLICT (email) DO NOTHING
-                - если репозиторий не вернул юзера -> такой юзер уже есть -> рейзим ошибку
-                - если репозиторий вернул юзера -> юзер успешно создан -> передаем созданного юзера дальше
-        """
-        register_log = logger.bind(operation="register")
-        register_log.debug("register started")
-
-        try:
-            start = perf_counter()
-            register_log.debug("password hashing started")
-            password_hash = await self._password_hasher.hash(password)
-            register_log.debug(
-                "password hashing ended", duration=perf_counter() - start
-            )
-
-            user_to_create = User(email=email, password_hash=password_hash)
-
-            async with self._uow:
-                created_user = await self._user_repo.create_if_absent(user_to_create)
-                if created_user is None:
-                    register_log.info("user registration conflict")
-                    raise DomainErrors.User.EMAIL_ALREADY_EXISTS()
-                event = UserRegisteredEvent(
-                    user_id=created_user.id,
-                    registered_at=created_user.created_at,
-                )
-                await self._event_publisher.publish(event)
-
-            register_log.info("user successfully created")
-            return created_user
-        except DomainError:
-            raise
-        except Exception:
-            register_log.exception("register failed")
-            raise
 
     async def login(self, email: NormalizedEmail, password: str) -> TokenPair:
         login_log = logger.bind(operation="login")

@@ -3,7 +3,6 @@ from datetime import timedelta
 import dishka
 from dishka import Provider, Scope
 
-from app.application.ports.events import EventPublisherProtocol, UserRegisteredEvent
 from app.application.ports.idempotency import (
     IdempotencyCoordinatorProtocol,
     ReplayResultProtectorProtocol,
@@ -88,7 +87,6 @@ class ServicesProvider(Provider):
         issuer: AccessTokenIssuerProtocol,
         verifier: AccessTokenVerifierProtocol,
         codec: OpaqueRefreshTokenCodecProtocol,
-        event_publisher: EventPublisherProtocol[UserRegisteredEvent],
         settings: SecuritySettings,
     ) -> AuthServiceProtocol:
         return AuthService(
@@ -100,6 +98,5 @@ class ServicesProvider(Provider):
             access_token_issuer=issuer,
             access_token_verifier=verifier,
             refresh_token_codec=codec,
-            event_publisher=event_publisher,
             session_idle_ttl=timedelta(seconds=settings.AUTH_SESSION_IDLE_TTL_SECONDS),
         )

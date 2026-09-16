@@ -16,11 +16,16 @@ from app.application.exceptions.idempotency import (
     IdempotencyStorageUnavailableError,
     RefreshReplayUnavailableError,
 )
+from app.application.ports.dto.registration import (
+    RegistrationOutcome,
+    RegistrationResult,
+)
 from app.application.services.auth_service import (
     AuthServiceProtocol,
     TokenPair,
 )
 from app.application.services.idempotency_fingerprint import hash_idempotency_key
+from app.application.services.registration import RegisterUserUseCaseProtocol
 from app.application.services.refresh import RefreshUseCaseProtocol
 from app.core.settings import SecuritySettings, Settings
 from app.domain.exceptions import (
@@ -35,10 +40,17 @@ from app.entrypoints.http.routers.exception_handlers import (
 
 
 class _AuthEndpointProvider(Provider):
-    def __init__(self, auth_service, refresh_use_case, settings: Settings) -> None:
+    def __init__(
+        self,
+        auth_service,
+        refresh_use_case,
+        registration_use_case,
+        settings: Settings,
+    ) -> None:
         super().__init__()
         self._auth_service = auth_service
         self._refresh_use_case = refresh_use_case
+        self._registration_use_case = registration_use_case
         self._settings = settings
 
     @provide(scope=Scope.REQUEST)
@@ -48,6 +60,10 @@ class _AuthEndpointProvider(Provider):
     @provide(scope=Scope.REQUEST)
     def get_refresh_use_case(self) -> RefreshUseCaseProtocol:
         return self._refresh_use_case
+
+    @provide(scope=Scope.REQUEST)
+    def get_registration_use_case(self) -> RegisterUserUseCaseProtocol:
+        return self._registration_use_case
 
     @provide(scope=Scope.APP)
     def get_settings(self) -> Settings:
@@ -65,6 +81,7 @@ async def _auth_http_context(
 ):
     auth_service = AsyncMock(spec=AuthServiceProtocol)
     refresh_use_case = AsyncMock(spec=RefreshUseCaseProtocol)
+    registration_use_case = AsyncMock(spec=RegisterUserUseCaseProtocol)
     settings = cast(
         Settings,
         SimpleNamespace(
@@ -76,6 +93,7 @@ async def _auth_http_context(
     )
     app = FastAPI()
     app.state.refresh_use_case = refresh_use_case
+    app.state.registration_use_case = registration_use_case
     app.include_router(
         create_api_router(
             include_test_token_endpoint=include_test_token_endpoint,
@@ -83,7 +101,12 @@ async def _auth_http_context(
     )
     register_exception_handlers(app)
     container = make_async_container(
-        _AuthEndpointProvider(auth_service, refresh_use_case, settings)
+        _AuthEndpointProvider(
+            auth_service,
+            refresh_use_case,
+            registration_use_case,
+            settings,
+        )
     )
     setup_dishka(container, app)
 
@@ -127,15 +150,21 @@ class TestRegisterEndpoint:
         Успех: 201 содержит только userId и нормализует email до application.
         Нежелательное поведение: model_validate ищет отсутствующий user_id в User.
         """
-        client, auth_service, _app = auth_http
+        client, _auth_service, _app = auth_http
+        registration = _app.state.registration_use_case
         user = User(
             email="user@example.com",
             password_hash="stored-hash",
         )
-        auth_service.register.return_value = user
+        registration.execute.return_value = RegistrationResult(
+            operation_id=user.id,
+            user_id=user.id,
+            outcome=RegistrationOutcome.COMPLETED,
+        )
 
         response = await client.post(
             "/api/v1/auth/register",
+            headers={"Idempotency-Key": "register-key-123"},
             json={
                 "email": "USER@EXAMPLE.COM",
                 "password": "strong-password",
@@ -145,10 +174,62 @@ class TestRegisterEndpoint:
         assert response.status_code == 201
         assert response.json() == {"userId": str(user.id)}
         assert "set-cookie" not in response.headers
-        auth_service.register.assert_awaited_once_with(
+        registration.execute.assert_awaited_once_with(
             email="user@example.com",
             password="strong-password",
+            key_hash=hash_idempotency_key("register-key-123"),
         )
+
+    async def test_pending_registration_returns_202_and_retry_after(
+        self, auth_http
+    ) -> None:
+        client, _auth_service, app = auth_http
+        registration = app.state.registration_use_case
+        operation_id = User(
+            email="pending@example.com",
+            password_hash="stored-hash",
+        ).id
+        user_id = User(
+            email="reserved@example.com",
+            password_hash="stored-hash",
+        ).id
+        registration.execute.return_value = RegistrationResult(
+            operation_id=operation_id,
+            user_id=user_id,
+            outcome=RegistrationOutcome.PENDING,
+        )
+
+        response = await client.post(
+            "/api/v1/auth/register",
+            headers={"Idempotency-Key": "register-key-123"},
+            json={
+                "email": "pending@example.com",
+                "password": "strong-password",
+            },
+        )
+
+        assert response.status_code == 202
+        assert response.headers["Retry-After"] == "1"
+        assert response.headers["Cache-Control"] == "no-store"
+        assert response.json() == {
+            "registrationId": str(operation_id),
+            "userId": str(user_id),
+            "status": "PENDING",
+        }
+
+    async def test_registration_requires_idempotency_key(self, auth_http) -> None:
+        client, _auth_service, app = auth_http
+
+        response = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": "user@example.com",
+                "password": "strong-password",
+            },
+        )
+
+        assert response.status_code == 422
+        app.state.registration_use_case.execute.assert_not_awaited()
 
     async def test_duplicate_email_uses_public_conflict(self, auth_http) -> None:
         """
@@ -156,11 +237,13 @@ class TestRegisterEndpoint:
         Успех: клиент получает безопасный 409 без cookie и внутренних деталей.
         Нежелательное поведение: duplicate email превращается в HTTP 500.
         """
-        client, auth_service, _app = auth_http
-        auth_service.register.side_effect = DomainErrors.User.EMAIL_ALREADY_EXISTS()
+        client, _auth_service, _app = auth_http
+        registration = _app.state.registration_use_case
+        registration.execute.side_effect = DomainErrors.User.EMAIL_ALREADY_EXISTS()
 
         response = await client.post(
             "/api/v1/auth/register",
+            headers={"Idempotency-Key": "register-key-123"},
             json={
                 "email": "user@example.com",
                 "password": "strong-password",
@@ -180,11 +263,13 @@ class TestRegisterEndpoint:
         Успех: 422 использует стабильную схему без исходного password.
         Нежелательное поведение: password попадает в detail или input.
         """
-        client, auth_service, _app = auth_http
+        client, _auth_service, _app = auth_http
+        registration = _app.state.registration_use_case
         password = "secret-that-must-not-be-echoed"
 
         response = await client.post(
             "/api/v1/auth/register",
+            headers={"Idempotency-Key": "register-key-123"},
             json={
                 "email": "not-an-email",
                 "password": password,
@@ -197,7 +282,7 @@ class TestRegisterEndpoint:
             "detail": "request validation failed",
         }
         assert password not in response.text
-        auth_service.register.assert_not_awaited()
+        registration.execute.assert_not_awaited()
 
 
 class TestLoginCookieEndpoint:

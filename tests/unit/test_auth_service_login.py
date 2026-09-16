@@ -14,7 +14,6 @@ from app.application.ports.dto.security import (
     AccessTokenClaims,
     IssuedRefreshToken,
 )
-from app.application.ports.events import UserRegisteredEvent
 from app.application.ports.security import AccessTokenVerifierProtocol
 from app.application.services.auth_service import AuthService
 from app.domain.auth_sessions import AuthSession
@@ -22,7 +21,6 @@ from app.domain.exceptions import (
     DomainErrors,
     InvalidCredentialsError,
     InvalidTokenError,
-    UserAlreadyExistsError,
 )
 from app.domain.refresh_tokens import RefreshToken
 from app.domain.users import User
@@ -181,14 +179,6 @@ class RecordingAccessTokenVerifier:
         return AccessTokenClaims.model_construct(user_id=self.user_id)
 
 
-class FakeEventPublisher:
-    def __init__(self) -> None:
-        self.published: list[UserRegisteredEvent] = []
-
-    async def publish(self, event: UserRegisteredEvent) -> None:
-        self.published.append(event)
-
-
 @dataclass
 class LoginScenario:
     service: AuthService
@@ -199,7 +189,6 @@ class LoginScenario:
     hasher: RecordingPasswordHasher
     access_issuer: RecordingAccessTokenIssuer
     refresh_codec: RecordingRefreshTokenCodec
-    event_publisher: FakeEventPublisher
     uow: TrackingUOW
     now: datetime
 
@@ -224,7 +213,6 @@ def create_login_scenario(
     )
     access_issuer = RecordingAccessTokenIssuer()
     refresh_codec = RecordingRefreshTokenCodec()
-    event_publisher = FakeEventPublisher()
     service = AuthService(
         user_repo=users,
         refresh_token_repo=refresh_tokens,
@@ -234,7 +222,6 @@ def create_login_scenario(
         access_token_issuer=access_issuer,
         access_token_verifier=(access_token_verifier or UnusedAccessTokenVerifier()),
         refresh_token_codec=refresh_codec,
-        event_publisher=event_publisher,
         session_idle_ttl=timedelta(days=30),
         clock=lambda: now,
     )
@@ -247,7 +234,6 @@ def create_login_scenario(
         hasher=hasher,
         access_issuer=access_issuer,
         refresh_codec=refresh_codec,
-        event_publisher=event_publisher,
         uow=uow,
         now=now,
     )
@@ -392,36 +378,6 @@ class TestLoginObservability:
         assert failure["stage"] == "refresh token storage"
         assert failure["exc_info"] is True
         assert scenario.uow.rollbacks == 1
-
-
-class TestRegistrationObservability:
-    async def test_expected_conflict_is_not_logged_as_exception(
-        self,
-    ) -> None:
-        """
-        Проверяем: duplicate email является ожидаемым domain rejection.
-        Успех: есть conflict event без PII и без register failed traceback.
-        Нежелательное поведение: email или password попадают в exception log.
-        """
-        scenario = create_login_scenario()
-        scenario.users.registration_result = None
-        password = "plain-registration-password"
-
-        with capture_logs() as logs, pytest.raises(UserAlreadyExistsError):
-            await scenario.service.register(
-                "user@example.com",
-                password,
-            )
-
-        events = {entry["event"] for entry in logs}
-        assert "user registration conflict" in events
-        assert "register failed" not in events
-        assert scenario.hasher.hash_calls == [password]
-
-        rendered_logs = repr(logs)
-        assert "user@example.com" not in rendered_logs
-        assert password not in rendered_logs
-        assert "new-password-hash" not in rendered_logs
 
 
 class TestCurrentUser:

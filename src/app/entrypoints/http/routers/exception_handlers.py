@@ -20,6 +20,7 @@ from app.application.exceptions.idempotency import (
     IdempotencyStorageUnavailableError,
     RefreshReplayUnavailableError,
 )
+from app.application.exceptions.profiles import ProfileProvisioningUnavailableError
 from app.domain.exceptions import (
     InvalidCredentialsError,
     InvalidRefreshTokenError,
@@ -45,6 +46,11 @@ class HttpErrorSpec:
 
 _HTTP_ERROR_SPECS: Mapping[type[Exception], HttpErrorSpec] = MappingProxyType(
     {
+        ProfileProvisioningUnavailableError: HttpErrorSpec(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code=AuthApiErrorCode.PROFILE_PROVISIONING_UNAVAILABLE,
+            detail="registration is temporarily unavailable",
+        ),
         RequestValidationError: HttpErrorSpec(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             code=AuthApiErrorCode.VALIDATION_ERROR,

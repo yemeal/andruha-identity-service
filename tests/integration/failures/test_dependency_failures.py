@@ -52,6 +52,7 @@ def test_postgres_unavailable_returns_safe_5xx_and_failed_readiness(
             readiness = client.get("/health/ready")
             register = client.post(
                 "/api/v1/auth/register",
+                headers={"Idempotency-Key": "postgres-down-key"},
                 json={
                     "email": "postgres-down@example.com",
                     "password": "Integration-password-123",

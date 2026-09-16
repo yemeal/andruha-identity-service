@@ -10,12 +10,16 @@ The service uses FastAPI and FastStream with strict hexagonal boundaries:
 
 ## Architecture and Entrypoints
 
-The service provides two independent entrypoint processes built from the same codebase:
+The service provides three independent entrypoint processes built from the same codebase:
 
 1. **HTTP API (`app.entrypoints.http.main:create_app`)**:
    Serves authentication and session management endpoints behind the API Gateway.
 2. **Outbox Relay Worker (`app.entrypoints.messaging.relay:main`)**:
    Independent background process polling PostgreSQL outbox table using non-blocking leases (`FOR UPDATE SKIP LOCKED`), publishing integration events to Apache Kafka outside database transactions, handling exponential backoff, dead-letter quarantine, and graceful shutdown on `SIGINT`/`SIGTERM`.
+3. **Registration Reconciler (`app.entrypoints.maintenance.registration_reconciler:main`)**:
+   Recovers durable registration operations after Profile timeouts, circuit-open responses,
+   process crashes, or an ambiguous Identity commit. It uses expiring PostgreSQL leases
+   and fencing tokens; every Profile call still goes through `ProfileProvisionerProtocol`.
 
 ---
 
@@ -25,20 +29,70 @@ All business routes are under `/api/v1/auth`:
 
 | Method | Path | Result |
 |---|---|---|
-| `POST` | `/register` | Create an account and atomically persist outbox event (`201`) |
+| `POST` | `/register` | Confirm profile creation, then commit account and outbox event (`201`); durable recovery pending (`202`) |
 | `POST` | `/login` | Set access and refresh HttpOnly cookies (`204`) |
 | `POST` | `/refresh` | Rotate cookies idempotently (`204`) |
 | `POST` | `/logout` | Revoke the session and delete cookies (`204`) |
 | `GET` | `/me` | Resolve current identity from trusted internal Bearer token |
 | `POST` | `/login/test` | Return tokens for non-production integration tests only |
 
-Refresh requires an `Idempotency-Key` header (8–128 chars). Reusing a key for the same token replays the committed token pair. Reusing a key for a different token returns `409 Conflict`; concurrent winner execution returns `423 Locked` with `Retry-After`; loss of required replay safety returns `503 Service Unavailable`.
+Registration and refresh require an `Idempotency-Key` header (8–128 chars).
+For registration, `201` means Profile returned `204` and Identity atomically committed
+the user, outbox event, and completed operation. `202` means the durable operation is
+accepted but there is no registered Identity user yet; retry the same request with the
+same key after `Retry-After`. Reusing a key with another email or password returns
+`409 Conflict`.
+
+For refresh, reusing a key for the same token replays the committed token pair. Reusing
+a key for a different token returns `409 Conflict`; concurrent winner execution returns
+`423 Locked` with `Retry-After`; loss of required replay safety returns
+`503 Service Unavailable`.
 
 Operational endpoints are `GET /health/live`, `GET /health/ready`, and `GET /metrics`.
 
 ---
 
 ## Transactional Outbox & Messaging
+
+Registration synchronously calls User Profile through `ProfileProvisionerProtocol`.
+The HTTP adapter sends `PUT /internal/v1/profiles/{user_id}` with `registered_at`
+and `X-Service-Token`. Only `204` confirms creation of both profile and settings.
+Before the call, Identity commits a `RegistrationOperation` containing the reserved
+user ID, normalized email, Argon2 hash, idempotency-key hash, and an expiring claim.
+No database transaction remains open while Profile is called. After `204`, Identity
+atomically inserts the `User`, inserts the outbox event, marks the operation completed,
+and scrubs the temporary password hash from the operation.
+Transport failures, `423`, `429`, and retryable `5xx` receive one bounded retry
+with the same UUID and timestamp. `Retry-After` is honored up to the configured
+maximum delay; permanent `4xx` responses such as `409` are not retried. The
+Profile CommandBus owns durable provisioning idempotency.
+
+Configure `PROFILE_SERVICE_URL`, `PROFILE_SERVICE_TOKEN` (matching User Profile
+`INTERNAL_API_TOKEN`), `PROFILE_SERVICE_TIMEOUT_SECONDS`, the bounded retry
+delays, and the circuit-breaker threshold/recovery interval in `core/settings`.
+Dishka owns the shared async HTTP client and closes it with the container.
+Missing credentials fail closed for registration. Each of at most two synchronous
+attempts has the configured HTTP timeout. A shared application-scoped circuit breaker fails fast
+after repeated dependency failures and permits one recovery probe after cooldown;
+permanent `4xx` responses do not open it.
+
+This is not a distributed transaction: a lost response or failed Identity commit
+can temporarily leave a profile without an account. The durable operation and
+registration reconciler converge that state by repeating the idempotent Profile PUT
+and finalizing Identity. GET requests never repair data. Exhausted or permanently
+rejected operations move to `BLOCKED` for explicit operational redrive. Existing
+accounts predating this contract still need a separate backfill before claiming the
+invariant for all users.
+
+After correcting the underlying cause, redrive one blocked operation from the
+reconciler container:
+
+```bash
+python -m app.entrypoints.maintenance.registration_reconciler --redrive <operation-uuid>
+```
+
+Kafka remains independent of registration success. The outbox event notifies
+other consumers; profile creation no longer waits for event delivery.
 
 User registration publishes integration event `identity.user_registered.v1` (defined in root contracts `contracts/identity/events/user-registered.v1.schema.json`):
 
@@ -70,6 +124,7 @@ See `.env.example` for non-secret configuration. Key settings include:
 * `VALKEY_*`, `IDEMPOTENCY_*`
 * `KAFKA_*` (bootstrap servers, client ID, acks)
 * `OUTBOX_*` (poll interval, batch size, claim lease, backoff multiplier/jitter, shutdown timeout)
+* `REGISTRATION_*` (reconciler polling, claim lease, backoff, attempts, shutdown timeout)
 * `JWT_*` (issuer, audiences, key paths, TTLs, clock skew)
 * `REPLAY_ENCRYPTION_ACTIVE_KEY_ID` and `REPLAY_ENCRYPTION_KEY_PATHS`
 
@@ -110,8 +165,8 @@ poetry sync --with dev --no-root
 poetry run ruff check .
 poetry run ruff format --check .
 poetry run ty check --error-on-warning
-poetry run pytest tests/unit            # 274 unit tests
-poetry run pytest tests/integration     # 100 integration tests (Postgres + Valkey)
+poetry run pytest tests/unit
+poetry run pytest tests/integration     # PostgreSQL + Valkey + Profile peer
 poetry run pip-audit
 docker build --target runtime --tag andruha/identity-service:local .
 ```
@@ -120,5 +175,5 @@ To run the entire local stack (API Gateway, Identity Service, Identity Relay, Po
 
 ```powershell
 docker compose config --quiet
-docker compose up -d --build identity-postgres valkey kafka identity-service identity-relay api-gateway
+docker compose up -d --build identity-postgres valkey kafka user-profile-service identity-service identity-relay identity-registration-reconciler api-gateway
 ```

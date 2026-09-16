@@ -17,9 +17,12 @@ from app.application.exceptions.idempotency import (
     IdempotencyStorageUnavailableError,
     RefreshReplayUnavailableError,
 )
+from app.application.exceptions.profiles import ProfileProvisioningUnavailableError
+from app.application.ports.dto.registration import RegistrationOutcome
 from app.application.services.auth_service import AuthServiceProtocol, TokenPair
 from app.application.services.idempotency_fingerprint import hash_idempotency_key
 from app.application.services.refresh import RefreshUseCaseProtocol
+from app.application.services.registration import RegisterUserUseCaseProtocol
 from app.core.settings import SecuritySettings
 from app.domain.exceptions import (
     DomainErrors,
@@ -35,6 +38,7 @@ from app.entrypoints.http.routers.exception_handlers import (
 from app.entrypoints.http.schemas.auth import (
     LoginRequest,
     MeResponse,
+    PendingRegistrationResponse,
     RegisterRequest,
     RegisterResponse,
     TestLoginResponse,
@@ -137,20 +141,55 @@ def create_auth_router(
     @router.post(
         "/register",
         status_code=status.HTTP_201_CREATED,
-        responses=openapi_error_responses(
-            UserAlreadyExistsError,
-            RequestValidationError,
-        ),
+        responses={
+            status.HTTP_202_ACCEPTED: {
+                "model": PendingRegistrationResponse,
+                "description": (
+                    "Registration is durable and awaiting profile reconciliation"
+                ),
+                "headers": {
+                    "Retry-After": {
+                        "description": "Seconds before retrying with the same key",
+                        "schema": {"type": "integer", "minimum": 1},
+                    }
+                },
+            },
+            **openapi_error_responses(
+                UserAlreadyExistsError,
+                ProfileProvisioningUnavailableError,
+                IdempotencyKeyConflictError,
+                RequestValidationError,
+            ),
+        },
     )
     @inject
     async def register(
         payload: RegisterRequest,
-        auth_service: FromDishka[AuthServiceProtocol],
-    ) -> RegisterResponse:
-        user = await auth_service.register(
-            email=payload.email, password=payload.password
+        response: Response,
+        idempotency_key: Annotated[
+            str,
+            Header(
+                alias="Idempotency-Key",
+                min_length=8,
+                max_length=128,
+            ),
+        ],
+        registration: FromDishka[RegisterUserUseCaseProtocol],
+    ) -> RegisterResponse | PendingRegistrationResponse:
+        result = await registration.execute(
+            email=payload.email,
+            password=payload.password,
+            key_hash=hash_idempotency_key(idempotency_key),
         )
-        return RegisterResponse(user_id=user.id)
+        _set_no_store_headers(response)
+        if result.outcome is RegistrationOutcome.PENDING:
+            response.status_code = status.HTTP_202_ACCEPTED
+            response.headers["Retry-After"] = str(result.retry_after_seconds or 1)
+            return PendingRegistrationResponse(
+                registration_id=result.operation_id,
+                user_id=result.user_id,
+            )
+        return RegisterResponse(user_id=result.user_id)
 
     @router.post(
         "/login",

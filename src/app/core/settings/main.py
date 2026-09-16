@@ -9,6 +9,8 @@ from app.core.settings.idempotency import IdempotencySettings
 from app.core.settings.kafka import KafkaSettings
 from app.core.settings.outbox import OutboxSettings
 from app.core.settings.postgres import PostgresSettings
+from app.core.settings.profile_service import ProfileServiceSettings
+from app.core.settings.registration import RegistrationSettings
 from app.core.settings.security import SecuritySettings
 from app.core.settings.valkey import ValkeySettings
 from app.domain.exceptions import DomainErrors
@@ -30,6 +32,10 @@ class Settings(BaseSettings):
     outbox: OutboxSettings = Field(default_factory=OutboxSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     idempotency: IdempotencySettings = Field(default_factory=IdempotencySettings)
+    profile_service: ProfileServiceSettings = Field(
+        default_factory=ProfileServiceSettings
+    )
+    registration: RegistrationSettings = Field(default_factory=RegistrationSettings)
 
     @model_validator(mode="before")
     @classmethod
@@ -46,6 +52,26 @@ class Settings(BaseSettings):
             "dev_logs",
             "log_level",
             "mute_loggers",
+        }
+        profile_service_keys = {
+            "profile_service_url",
+            "profile_service_token",
+            "profile_service_timeout_seconds",
+            "profile_service_retry_delay_seconds",
+            "profile_service_retry_max_delay_seconds",
+            "profile_service_cb_failures",
+            "profile_service_cb_recovery_seconds",
+        }
+        registration_keys = {
+            "registration_poll_interval_seconds",
+            "registration_batch_size",
+            "registration_claim_lease_seconds",
+            "registration_retry_initial_seconds",
+            "registration_retry_max_seconds",
+            "registration_retry_exponent",
+            "registration_retry_jitter_ratio",
+            "registration_retry_max_attempts",
+            "registration_shutdown_timeout_seconds",
         }
         postgres_keys = {
             "database_host",
@@ -113,6 +139,8 @@ class Settings(BaseSettings):
         }
 
         app_data: dict[str, Any] = {}
+        profile_service_data: dict[str, Any] = {}
+        registration_data: dict[str, Any] = {}
         postgres_data: dict[str, Any] = {}
         valkey_data: dict[str, Any] = {}
         kafka_data: dict[str, Any] = {}
@@ -125,6 +153,10 @@ class Settings(BaseSettings):
             k_lower = k.lower()
             if k_lower in app_keys:
                 app_data[k] = v
+            elif k_lower in profile_service_keys:
+                profile_service_data[k] = v
+            elif k_lower in registration_keys:
+                registration_data[k] = v
             elif k_lower in postgres_keys:
                 postgres_data[k] = v
             elif k_lower in valkey_keys:
@@ -139,6 +171,24 @@ class Settings(BaseSettings):
                 idempotency_data[k] = v
 
         result = dict(raw_data)
+        if profile_service_data:
+            if "profile_service" in result and isinstance(
+                result["profile_service"], dict
+            ):
+                result["profile_service"] = {
+                    **result["profile_service"],
+                    **profile_service_data,
+                }
+            elif "profile_service" not in result:
+                result["profile_service"] = profile_service_data
+        if registration_data:
+            if "registration" in result and isinstance(result["registration"], dict):
+                result["registration"] = {
+                    **result["registration"],
+                    **registration_data,
+                }
+            elif "registration" not in result:
+                result["registration"] = registration_data
         if app_data:
             if "app" in result and isinstance(result["app"], dict):
                 result["app"] = {**result["app"], **app_data}
@@ -197,6 +247,18 @@ class Settings(BaseSettings):
             and self.security.AUTH_TEST_TOKEN_ENDPOINT_ENABLED
         ):
             raise DomainErrors.Token.INVALID_CONFIGURATION()
+        maximum_profile_attempt_seconds = (
+            2 * self.profile_service.PROFILE_SERVICE_TIMEOUT_SECONDS
+            + self.profile_service.PROFILE_SERVICE_RETRY_MAX_DELAY_SECONDS
+        )
+        if (
+            maximum_profile_attempt_seconds
+            >= self.registration.REGISTRATION_CLAIM_LEASE_SECONDS
+        ):
+            raise ValueError(
+                "REGISTRATION_CLAIM_LEASE_SECONDS must exceed the maximum "
+                "bounded Profile attempt window"
+            )
         return self
 
 

@@ -9,6 +9,8 @@ from app.infrastructure.di.idempotency import (
     IdempotencyRequestProvider,
 )
 from app.infrastructure.di.messaging import MessagingProvider
+from app.infrastructure.di.profiles import ProfilesProvider
+from app.infrastructure.di.registration import RegistrationProvider
 from app.infrastructure.di.repositories import RepositoriesProvider
 from app.infrastructure.di.security import SecurityProvider
 from app.infrastructure.di.services import ServicesProvider
@@ -26,6 +28,8 @@ def create_container() -> AsyncContainer:
         RepositoriesProvider(),
         ServicesProvider(),
         MessagingProvider(),
+        ProfilesProvider(),
+        RegistrationProvider(),
     )
 
 
@@ -35,6 +39,8 @@ __all__ = [
     "IdempotencyAppProvider",
     "IdempotencyRequestProvider",
     "MessagingProvider",
+    "ProfilesProvider",
+    "RegistrationProvider",
     "RepositoriesProvider",
     "SecurityProvider",
     "ServicesProvider",

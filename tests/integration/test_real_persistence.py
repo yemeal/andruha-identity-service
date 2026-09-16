@@ -83,6 +83,7 @@ async def test_alembic_schema_matches_final_orm_metadata() -> None:
             "refresh_tokens",
             "idempotency_records",
             "outbox",
+            "registration_operations",
         }
     finally:
         await engine.dispose()
@@ -235,6 +236,7 @@ def test_refresh_canaries_never_enter_storage_logs_errors_or_metrics(
         with TestClient(create_app()) as client:
             register = client.post(
                 "/api/v1/auth/register",
+                headers={"Idempotency-Key": f"register-{uuid.uuid4()}"},
                 json={"email": email, "password": "Canary-password-123"},
             )
             assert register.status_code == 201

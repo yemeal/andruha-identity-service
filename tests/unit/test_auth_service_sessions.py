@@ -19,7 +19,6 @@ from app.application.ports.dto.security import (
     AccessTokenClaims,
     IssuedRefreshToken,
 )
-from app.application.ports.events import UserRegisteredEvent
 from app.application.services.auth_service import AuthService, TokenPair
 from app.application.services.idempotency_fingerprint import (
     compute_request_hash,
@@ -347,14 +346,6 @@ class SessionScenario:
         return TokenPair.model_validate(payload)
 
 
-class FakeEventPublisher:
-    def __init__(self) -> None:
-        self.published: list[UserRegisteredEvent] = []
-
-    async def publish(self, event: UserRegisteredEvent) -> None:
-        self.published.append(event)
-
-
 def create_scenario(
     *,
     expired: bool = False,
@@ -392,7 +383,6 @@ def create_scenario(
     clock = FrozenClock(now)
     uow = InMemoryAuthUOW(state)
     protector = PassthroughReplayProtector()
-    event_publisher = FakeEventPublisher()
     operation = TransactionalRefreshOperation(
         users,
         refresh_tokens,
@@ -412,7 +402,6 @@ def create_scenario(
         access_token_issuer=access_issuer,
         access_token_verifier=UnusedAccessTokenVerifier(),
         refresh_token_codec=codec,
-        event_publisher=event_publisher,
         session_idle_ttl=idle_ttl,
         clock=clock.now,
     )

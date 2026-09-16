@@ -22,9 +22,15 @@ from app.application.ports.idempotency import (
     ReplayResultProtectorProtocol,
 )
 from app.application.ports.outbox.scope_factory import OutboxScopeFactory
+from app.application.ports.profiles import ProfileProvisionerProtocol
+from app.application.ports.registration_recovery import (
+    RegistrationObserverProtocol,
+    RegistrationScopeFactory,
+)
 from app.application.ports.repositories import (
     AuthSessionRepositoryProtocol,
     OutboxRepositoryProtocol,
+    RegistrationOperationRepositoryProtocol,
     RefreshTokenRepositoryProtocol,
     UserRepositoryProtocol,
 )
@@ -39,6 +45,16 @@ from app.application.services.auth_service import AuthService, AuthServiceProtoc
 from app.application.services.durable_idempotency import DurableExecutionService
 from app.application.services.idempotency_coordinator import IdempotencyCoordinator
 from app.application.services.outbox_relay import OutboxRelayService
+from app.application.services.registration import (
+    RegisterUserUseCaseProtocol,
+    RegistrationAdministrationProtocol,
+    RegistrationAdministrationService,
+    RegistrationCoordinator,
+)
+from app.application.services.registration_reconciler import (
+    RegistrationReconcilerProtocol,
+    RegistrationReconcilerService,
+)
 from app.application.services.refresh import (
     RefreshUseCase,
     RefreshUseCaseProtocol,
@@ -51,6 +67,8 @@ from app.core.settings import (
     KafkaSettings,
     OutboxSettings,
     PostgresSettings,
+    ProfileServiceSettings,
+    RegistrationSettings,
     SecuritySettings,
     Settings,
     ValkeySettings,
@@ -63,6 +81,9 @@ from app.infrastructure.database.repositories.idempotency_record_repository impo
     IdempotencyRecordRepository,
 )
 from app.infrastructure.database.repositories.outbox_repository import OutboxRepository
+from app.infrastructure.database.repositories.registration_operation_repository import (
+    RegistrationOperationRepository,
+)
 from app.infrastructure.database.repositories.refresh_token_repository import (
     RefreshTokenRepository,
 )
@@ -70,7 +91,14 @@ from app.infrastructure.database.repositories.user_repository import UserReposit
 from app.infrastructure.database.uow import SQLAlchemyAsyncUOW
 from app.infrastructure.di import create_container
 from app.infrastructure.messaging.kafka_publisher import FastStreamKafkaPublisher
-from app.infrastructure.observability import PrometheusIdempotencyObserver
+from app.infrastructure.http.profile_provisioner import (
+    HTTPProfileProvisioner,
+    ProfileCircuitBreaker,
+)
+from app.infrastructure.observability import (
+    PrometheusIdempotencyObserver,
+    PrometheusRegistrationObserver,
+)
 from app.infrastructure.resilience import IdempotencyCircuitBreaker
 from app.infrastructure.resilience.circuit_breaking_hot_store import (
     CircuitBreakingHotStore,
@@ -144,6 +172,13 @@ async def test_container_resolves_all_settings(
         assert await container.get(OutboxSettings) == test_environment.outbox
         assert await container.get(SecuritySettings) == test_environment.security
         assert await container.get(IdempotencySettings) == test_environment.idempotency
+        assert (
+            await container.get(ProfileServiceSettings)
+            == test_environment.profile_service
+        )
+        assert (
+            await container.get(RegistrationSettings) == test_environment.registration
+        )
     finally:
         await container.close()
 
@@ -201,6 +236,33 @@ async def test_container_resolves_app_scope_infrastructure(
             await container.get(HotIdempotencyStoreProtocol),
             CircuitBreakingHotStore,
         )
+
+        # Synchronous User Profile dependency
+        assert isinstance(
+            await container.get(ProfileCircuitBreaker), ProfileCircuitBreaker
+        )
+        assert isinstance(
+            await container.get(ProfileProvisionerProtocol), HTTPProfileProvisioner
+        )
+
+        # Durable registration recovery
+        assert callable(await container.get(RegistrationScopeFactory))
+        assert isinstance(
+            await container.get(RegistrationObserverProtocol),
+            PrometheusRegistrationObserver,
+        )
+        assert isinstance(
+            await container.get(RegisterUserUseCaseProtocol),
+            RegistrationCoordinator,
+        )
+        assert isinstance(
+            await container.get(RegistrationAdministrationProtocol),
+            RegistrationAdministrationService,
+        )
+        assert isinstance(
+            await container.get(RegistrationReconcilerProtocol),
+            RegistrationReconcilerService,
+        )
     finally:
         await container.close()
 
@@ -234,6 +296,10 @@ async def test_container_resolves_request_scope_dependencies(
             assert isinstance(
                 await request_container.get(OutboxRepositoryProtocol),
                 OutboxRepository,
+            )
+            assert isinstance(
+                await request_container.get(RegistrationOperationRepositoryProtocol),
+                RegistrationOperationRepository,
             )
             assert isinstance(
                 await request_container.get(
