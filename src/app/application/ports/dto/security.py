@@ -13,18 +13,16 @@ from pydantic import (
     model_validator,
 )
 
-from app.domain.exceptions import DomainErrors
-from app.domain.users import UserRole
+from app.application.exceptions.security import (
+    InvalidTokenDataError,
+    TokenIssuanceError,
+)
+from app.domain.aggregates.user import UserRole
 
 
 @dataclass(frozen=True, slots=True)
 class AccessPrincipal:
-    """
-    Минимальный снимок пользователя, необходимый для выпуска access-токена.
-
-    JWT-адаптер не получает целого User и поэтому не видит password_hash,
-    email и другие данные, которые не должны попадать в токен.
-    """
+    """User identity and role; credentials never reach the JWT adapter."""
 
     user_id: UUID
     role: UserRole
@@ -37,26 +35,16 @@ NonBlankClaim = Annotated[
 
 
 class AccessTokenClaims(BaseModel):
-    """
-    Validated and normalized access-token claims.
+    """Claims validated by the access-token verifier.
 
-    The adapter creates this model only after signature, algorithm, type,
-    issuer, audience, required-claim, and lifetime validation. Access tokens
-    remain stateless and are not linked to AuthSession through a sid claim.
-
-    Назначение полей:
-        iss - кто выпустил токен;
-        sub - стабильный ID пользователя;
-        aud - сервисы, которым разрешено принять токен;
-        iat и exp - время выпуска и истечения;
-        jti - уникальный ID конкретного access-токена;
-        role - минимально необходимая авторизационная информация.
+    Access tokens are stateless and carry no authentication-session identifier.
     """
 
     model_config = ConfigDict(
         frozen=True,
         validate_by_name=True,
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
     issuer: NonBlankClaim = Field(validation_alias="iss")
@@ -81,7 +69,7 @@ class AccessTokenClaims(BaseModel):
                 list[object] | tuple[object, ...] | set[object] | frozenset[object],
                 value,
             )
-        raise DomainErrors.Token.INVALID_DATA()
+        raise InvalidTokenDataError()
 
     @field_validator("issued_at", "expires_at", mode="before")
     @classmethod
@@ -89,33 +77,28 @@ class AccessTokenClaims(BaseModel):
         # JWT NumericDate claims must remain numeric at the adapter boundary.
         if isinstance(value, datetime):
             if value.utcoffset() is None:
-                raise DomainErrors.Token.INVALID_DATA()
+                raise InvalidTokenDataError()
             return value
         if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise DomainErrors.Token.INVALID_DATA()
+            raise InvalidTokenDataError()
         return value
 
     @model_validator(mode="after")
     def validate_time_window(self) -> Self:
         if self.expires_at <= self.issued_at:
-            raise DomainErrors.Token.INVALID_DATA()
+            raise InvalidTokenDataError()
         return self
 
 
 @dataclass(frozen=True, slots=True)
 class IssuedRefreshToken:
-    """
-    Результат выпуска opaque refresh-токена.
-
-    value возвращается клиенту ровно один раз, digest сохраняется в БД.
-    Открытое значение исключено из repr, чтобы не утечь в логи.
-    """
+    """Opaque credential and storage digest; both are excluded from repr."""
 
     value: str = field(repr=False)
     digest: bytes = field(repr=False)
 
     def __post_init__(self) -> None:
         if not self.value:
-            raise DomainErrors.Token.INVALID_DATA()
+            raise TokenIssuanceError()
         if len(self.digest) != 32:
-            raise DomainErrors.Token.INVALID_DATA()
+            raise TokenIssuanceError()

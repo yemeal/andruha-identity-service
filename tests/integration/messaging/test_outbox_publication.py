@@ -24,7 +24,7 @@ from app.application.ports.outbox.scope_factory import (
     OutboxScope,
     OutboxScopeFactory,
 )
-from app.application.services.outbox_relay import (
+from app.application.outbox.relay import (
     OutboxRelayService,
     OutboxRetryPolicy,
 )

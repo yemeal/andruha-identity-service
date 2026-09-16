@@ -31,7 +31,6 @@ from app.application.ports.repositories import (
     AuthSessionRepositoryProtocol,
     OutboxRepositoryProtocol,
     RegistrationOperationRepositoryProtocol,
-    RefreshTokenRepositoryProtocol,
     UserRepositoryProtocol,
 )
 from app.application.ports.security import (
@@ -41,23 +40,22 @@ from app.application.ports.security import (
     PasswordHasherProtocol,
 )
 from app.application.ports.uow import AsyncUOWProtocol
-from app.application.services.auth_service import AuthService, AuthServiceProtocol
-from app.application.services.durable_idempotency import DurableExecutionService
-from app.application.services.idempotency_coordinator import IdempotencyCoordinator
-from app.application.services.outbox_relay import OutboxRelayService
-from app.application.services.registration import (
-    RegisterUserUseCaseProtocol,
-    RegistrationAdministrationProtocol,
-    RegistrationAdministrationService,
-    RegistrationCoordinator,
+from app.application.use_cases.login.handler import LoginHandler
+from app.application.use_cases.logout.handler import LogoutHandler
+from app.application.use_cases.get_current_user.handler import GetCurrentUserHandler
+from app.application.idempotency.durable import DurableExecutionService
+from app.application.idempotency.coordinator import IdempotencyCoordinator
+from app.application.outbox.relay import OutboxRelayService
+from app.application.use_cases.register.handler import RegisterUserHandler
+from app.application.use_cases.redrive_registration.handler import (
+    RedriveRegistrationHandler,
 )
-from app.application.services.registration_reconciler import (
+from app.application.registration.reconciler import (
     RegistrationReconcilerProtocol,
     RegistrationReconcilerService,
 )
-from app.application.services.refresh import (
-    RefreshUseCase,
-    RefreshUseCaseProtocol,
+from app.application.use_cases.refresh.handler import (
+    RefreshHandler,
     TransactionalRefreshOperation,
     TransactionalRefreshOperationProtocol,
 )
@@ -83,9 +81,6 @@ from app.infrastructure.database.repositories.idempotency_record_repository impo
 from app.infrastructure.database.repositories.outbox_repository import OutboxRepository
 from app.infrastructure.database.repositories.registration_operation_repository import (
     RegistrationOperationRepository,
-)
-from app.infrastructure.database.repositories.refresh_token_repository import (
-    RefreshTokenRepository,
 )
 from app.infrastructure.database.repositories.user_repository import UserRepository
 from app.infrastructure.database.uow import SQLAlchemyAsyncUOW
@@ -252,12 +247,12 @@ async def test_container_resolves_app_scope_infrastructure(
             PrometheusRegistrationObserver,
         )
         assert isinstance(
-            await container.get(RegisterUserUseCaseProtocol),
-            RegistrationCoordinator,
+            await container.get(RegisterUserHandler),
+            RegisterUserHandler,
         )
         assert isinstance(
-            await container.get(RegistrationAdministrationProtocol),
-            RegistrationAdministrationService,
+            await container.get(RedriveRegistrationHandler),
+            RedriveRegistrationHandler,
         )
         assert isinstance(
             await container.get(RegistrationReconcilerProtocol),
@@ -284,10 +279,6 @@ async def test_container_resolves_request_scope_dependencies(
             assert isinstance(
                 await request_container.get(UserRepositoryProtocol),
                 UserRepository,
-            )
-            assert isinstance(
-                await request_container.get(RefreshTokenRepositoryProtocol),
-                RefreshTokenRepository,
             )
             assert isinstance(
                 await request_container.get(AuthSessionRepositoryProtocol),
@@ -328,12 +319,11 @@ async def test_container_resolves_request_scope_dependencies(
                 TransactionalRefreshOperation,
             )
             assert isinstance(
-                await request_container.get(RefreshUseCaseProtocol),
-                RefreshUseCase,
+                await request_container.get(RefreshHandler),
+                RefreshHandler,
             )
-            assert isinstance(
-                await request_container.get(AuthServiceProtocol), AuthService
-            )
+            for handler in (LoginHandler, LogoutHandler, GetCurrentUserHandler):
+                assert isinstance(await request_container.get(handler), handler)
     finally:
         await container.close()
 

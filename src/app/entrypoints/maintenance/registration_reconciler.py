@@ -7,9 +7,14 @@ from uuid import UUID
 
 import structlog
 
-from app.application.services.registration import RegistrationAdministrationProtocol
-from app.application.services.registration_reconciler import (
+from app.application.registration.reconciler import (
     RegistrationReconcilerProtocol,
+)
+from app.application.use_cases.redrive_registration.command import (
+    RedriveRegistrationCommand,
+)
+from app.application.use_cases.redrive_registration.handler import (
+    RedriveRegistrationHandler,
 )
 from app.core.logging import setup_logging
 from app.core.settings import Settings
@@ -41,8 +46,10 @@ async def main(*, redrive_operation_id: str | None = None) -> None:
         settings = await container.get(Settings)
         setup_logging(settings.app)
         if redrive_operation_id is not None:
-            administration = await container.get(RegistrationAdministrationProtocol)
-            redriven = await administration.redrive(UUID(redrive_operation_id))
+            administration = await container.get(RedriveRegistrationHandler)
+            redriven = await administration.execute(
+                RedriveRegistrationCommand(operation_id=UUID(redrive_operation_id))
+            )
             logger.info(
                 "registration_redrive_finished",
                 operation_id=redrive_operation_id,

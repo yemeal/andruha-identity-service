@@ -84,10 +84,10 @@ class DurableExecutionService:
         identity: IdempotencyIdentity,
         request_hash: bytes,
     ) -> ExecutionResult | None:
-        """Классифицирует durable result до внешней preparation-фазы."""
+        """Read and classify a committed result in a short transaction."""
         _validate_digest(request_hash)
         # Даже SELECT начинает транзакцию в SQLAlchemy. Короткая read-UoW
-        # гарантированно завершается до потенциально медленного prepare I/O.
+        # завершается до открытия транзакции выполнения.
         async with self._uow:
             existing = await self._records.get_completed(identity)
         if existing is None:

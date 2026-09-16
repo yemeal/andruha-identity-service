@@ -18,7 +18,6 @@ from app.application.ports.idempotency.record_repository import (
 )
 from app.application.ports.idempotency.types import (
     AsyncSleeper,
-    IdempotencyPreparation,
     IdempotentOperation,
     OwnerTokenFactory,
 )
@@ -29,7 +28,6 @@ __all__ = (
     "HotIdempotencyStoreProtocol",
     "IdempotencyCoordinatorProtocol",
     "IdempotencyObserverProtocol",
-    "IdempotencyPreparation",
     "IdempotencyRecordRepositoryProtocol",
     "IdempotentOperation",
     "OwnerTokenFactory",

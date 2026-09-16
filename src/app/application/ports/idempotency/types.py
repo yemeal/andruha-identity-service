@@ -5,7 +5,6 @@ from uuid import UUID
 from app.application.ports.dto.idempotency import StoredResult
 
 IdempotentOperation = Callable[[], Awaitable[StoredResult]]
-IdempotencyPreparation = Callable[[], Awaitable[None]]
 
 
 class OwnerTokenFactory(Protocol):

@@ -1,3 +1,4 @@
+from app.application.exceptions.security import InvalidTokenConfigurationError
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,6 @@ from app.core.settings import (
     read_mute_loggers,
     read_port,
 )
-from app.domain.exceptions import DomainErrors
 
 
 @pytest.mark.parametrize("raw_value", ["1", "true", "TRUE", " yes ", "on"])
@@ -253,7 +253,7 @@ def test_security_settings_validation_rules() -> None:
         ).REPLAY_ENCRYPTION_KEY_PATHS
 
     # Service audience not in audiences
-    with pytest.raises(DomainErrors.Token.INVALID_CONFIGURATION):
+    with pytest.raises(InvalidTokenConfigurationError):
         SecuritySettings(
             JWT_SERVICE_AUDIENCE="untrusted-service",
             jwt_audiences_raw="andruha-identity-service,andruha-api-gateway",
@@ -289,7 +289,7 @@ def test_composite_settings_cross_validation(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("APP_ENVIRONMENT", "production")
     monkeypatch.setenv("AUTH_TEST_TOKEN_ENDPOINT_ENABLED", "true")
 
-    with pytest.raises(DomainErrors.Token.INVALID_CONFIGURATION):
+    with pytest.raises(InvalidTokenConfigurationError):
         Settings(
             app=AppSettings(APP_ENVIRONMENT="production"),
             security=SecuritySettings(AUTH_TEST_TOKEN_ENDPOINT_ENABLED=True),

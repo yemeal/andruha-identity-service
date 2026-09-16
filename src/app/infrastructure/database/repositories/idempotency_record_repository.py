@@ -1,9 +1,11 @@
 from datetime import datetime, timedelta
 
+from pydantic import ValidationError
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.exceptions.persistence import StoredStateError
 from app.application.ports.dto.idempotency import (
     CompletedIdempotencyResult,
 )
@@ -30,15 +32,18 @@ class IdempotencyRecordRepository:
         row = result.scalar_one_or_none()
         if row is None or row.expires_at <= utc_now():
             return None
-        return CompletedIdempotencyResult(
-            request_hash=row.request_hash,
-            result_type=row.result_type,
-            result_payload=row.result_payload,
-            result_version=row.result_version,
-            resource_type=row.resource_type,
-            resource_id=row.resource_id,
-            resource_version=row.resource_version,
-        )
+        try:
+            return CompletedIdempotencyResult(
+                request_hash=row.request_hash,
+                result_type=row.result_type,
+                result_payload=row.result_payload,
+                result_version=row.result_version,
+                resource_type=row.resource_type,
+                resource_id=row.resource_id,
+                resource_version=row.resource_version,
+            )
+        except ValidationError as error:
+            raise StoredStateError() from error
 
     async def try_add_completed(
         self, identity: IdempotencyIdentity, completed: CompletedIdempotencyResult

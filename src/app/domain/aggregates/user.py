@@ -1,8 +1,11 @@
 from datetime import datetime
 from enum import StrEnum
 
+from pydantic import Field
+
 from app.domain.base import MutableEntity
 from app.domain.value_objects.email import NormalizedEmail
+from app.domain.value_objects.password_hash import PasswordHash
 
 
 class UserStatus(StrEnum):
@@ -16,14 +19,10 @@ class UserRole(StrEnum):
 
 
 class User(MutableEntity):
-    """
-    Доменная модель пользователя,
-    пароль хранится в захешированном виде
-    """
+    """Корень учётной записи: credentials и разрешение аутентификации."""
 
-    email: NormalizedEmail  # email обязательно UNIQUE
-    password_hash: str
-
+    email: NormalizedEmail
+    password_hash: PasswordHash = Field(repr=False)
     role: UserRole = UserRole.USER
     status: UserStatus = UserStatus.ACTIVE
 
@@ -32,5 +31,5 @@ class User(MutableEntity):
         return self.status is UserStatus.ACTIVE
 
     def disable(self, now: datetime) -> None:
-        self.status = UserStatus.DISABLED
-        self.updated_at = now
+        if self.status is not UserStatus.DISABLED:
+            self._change_at(now, status=UserStatus.DISABLED)

@@ -14,7 +14,7 @@ from tests.integration.helpers import (
     unique_email,
 )
 
-from app.domain.users import UserStatus
+from app.domain.aggregates.user import UserStatus
 from app.infrastructure.database.models import (
     AuthSessionORM,
     RefreshTokenORM,

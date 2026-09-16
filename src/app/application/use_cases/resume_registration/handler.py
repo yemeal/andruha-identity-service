@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timedelta
-from math import ceil
 import random
-from typing import Protocol
 import uuid
 
 import structlog
 
-from app.application.exceptions.idempotency import IdempotencyKeyConflictError
+from app.application.exceptions.persistence import (
+    PersistenceUnavailableError,
+    TransactionConflictError,
+)
 from app.application.exceptions.profiles import (
     ProfileProvisioningRejectedError,
     ProfileProvisioningUnavailableError,
@@ -27,36 +28,14 @@ from app.application.ports.registration_recovery import (
     RegistrationObserverProtocol,
     RegistrationScopeFactory,
 )
-from app.application.ports.security import PasswordHasherProtocol
+from app.application.registration.results import pending_result
+from app.application.use_cases.resume_registration.command import (
+    ResumeRegistrationCommand,
+)
+from app.domain.aggregates.user import User
 from app.domain.base import utc_now
-from app.domain.exceptions import DomainErrors
-from app.domain.users import User
-from app.domain.value_objects.email import NormalizedEmail
 
 logger = structlog.get_logger(__name__)
-
-
-class RegisterUserUseCaseProtocol(Protocol):
-    async def execute(
-        self,
-        *,
-        email: NormalizedEmail,
-        password: str,
-        key_hash: bytes,
-    ) -> RegistrationResult: ...
-
-
-class RegistrationAttemptProtocol(Protocol):
-    async def resume_claimed(
-        self,
-        operation: RegistrationOperation,
-        *,
-        owner_token: uuid.UUID,
-    ) -> RegistrationResult: ...
-
-
-class RegistrationAdministrationProtocol(Protocol):
-    async def redrive(self, operation_id: uuid.UUID) -> bool: ...
 
 
 class _NullRegistrationObserver:
@@ -76,81 +55,26 @@ class _NullRegistrationObserver:
         pass
 
 
-class RegistrationCoordinator(RegisterUserUseCaseProtocol, RegistrationAttemptProtocol):
-    """Coordinates one durable registration without holding a DB transaction over HTTP."""
-
+class ResumeRegistrationHandler:
     def __init__(
         self,
         *,
         scope_factory: RegistrationScopeFactory,
         profile_provisioner: ProfileProvisionerProtocol,
-        password_hasher: PasswordHasherProtocol,
         retry_policy: RegistrationRetryPolicy,
-        claim_lease_seconds: float,
         observer: RegistrationObserverProtocol | None = None,
         clock: Callable[[], datetime] = utc_now,
-        owner_token_factory: Callable[[], uuid.UUID] = uuid.uuid7,
         jitter_source: Callable[[], float] | None = None,
     ) -> None:
-        if claim_lease_seconds <= 0:
-            raise ValueError("claim_lease_seconds must be positive")
         self._scope_factory = scope_factory
         self._profile_provisioner = profile_provisioner
-        self._password_hasher = password_hasher
         self._retry_policy = retry_policy
-        self._claim_lease_seconds = claim_lease_seconds
         self._observer = observer or _NullRegistrationObserver()
         self._clock = clock
-        self._owner_token_factory = owner_token_factory
         self._jitter_source = jitter_source or (lambda: random.uniform(-1.0, 1.0))
 
-    async def execute(
-        self,
-        *,
-        email: NormalizedEmail,
-        password: str,
-        key_hash: bytes,
-    ) -> RegistrationResult:
-        if len(key_hash) != 32:
-            raise ValueError("key_hash must be a full SHA-256 digest")
-
-        existing = await self._load_by_key(key_hash)
-        if existing is not None:
-            return await self._resume_existing(existing, email=email, password=password)
-
-        password_hash = await self._password_hasher.hash(password)
-        now = self._clock()
-        owner_token = self._owner_token_factory()
-        candidate = RegistrationOperation(
-            email=email,
-            password_hash=password_hash,
-            key_hash=key_hash,
-            status=RegistrationStatus.CLAIMED,
-            available_at=now,
-            claim_token=owner_token,
-            claim_expires_at=now + timedelta(seconds=self._claim_lease_seconds),
-            created_at=now,
-        )
-
-        async with self._scope_factory() as scope, scope.uow:
-            if await scope.users.get_by_email(email) is not None:
-                raise DomainErrors.User.EMAIL_ALREADY_EXISTS()
-            created = await scope.registrations.try_create(candidate)
-
-        if created is None:
-            existing = await self._load_by_key(key_hash)
-            if existing is None:
-                raise DomainErrors.User.EMAIL_ALREADY_EXISTS()
-            return await self._resume_existing(existing, email=email, password=password)
-
-        return await self.resume_claimed(created, owner_token=owner_token)
-
-    async def resume_claimed(
-        self,
-        operation: RegistrationOperation,
-        *,
-        owner_token: uuid.UUID,
-    ) -> RegistrationResult:
+    async def execute(self, command: ResumeRegistrationCommand) -> RegistrationResult:
+        operation, owner_token = command.operation, command.owner_token
         if (
             operation.status is not RegistrationStatus.CLAIMED
             or operation.claim_token != owner_token
@@ -171,16 +95,19 @@ class RegistrationCoordinator(RegisterUserUseCaseProtocol, RegistrationAttemptPr
                 owner_token=owner_token,
                 error=error,
             )
+        except Exception as error:
+            await self._block(operation, owner_token=owner_token, error=error)
+            raise
 
         try:
             user = await self._finalize(operation, owner_token=owner_token)
         except _LostRegistrationClaim:
             self._observer.lost_claim()
-            return self._pending_result(operation)
+            return pending_result(operation, now=self._clock())
         except _RegistrationFinalizationConflict as error:
             await self._block(operation, owner_token=owner_token, error=error)
             raise ProfileProvisioningUnavailableError() from error
-        except Exception as error:
+        except (PersistenceUnavailableError, TransactionConflictError) as error:
             logger.exception(
                 "registration finalization deferred",
                 operation_id=str(operation.id),
@@ -190,6 +117,9 @@ class RegistrationCoordinator(RegisterUserUseCaseProtocol, RegistrationAttemptPr
                 owner_token=owner_token,
                 error=error,
             )
+        except Exception as error:
+            await self._block(operation, owner_token=owner_token, error=error)
+            raise
 
         self._observer.operation_completed()
         logger.info(
@@ -202,53 +132,6 @@ class RegistrationCoordinator(RegisterUserUseCaseProtocol, RegistrationAttemptPr
             user_id=user.id,
             outcome=RegistrationOutcome.COMPLETED,
         )
-
-    async def _resume_existing(
-        self,
-        operation: RegistrationOperation,
-        *,
-        email: NormalizedEmail,
-        password: str,
-    ) -> RegistrationResult:
-        if operation.email != email:
-            raise IdempotencyKeyConflictError()
-
-        password_hash = operation.password_hash
-        if password_hash is None:
-            async with self._scope_factory() as scope, scope.uow:
-                user = await scope.users.get(operation.user_id)
-            if user is None:
-                raise RuntimeError("completed registration has no user")
-            password_hash = user.password_hash
-
-        if not await self._password_hasher.verify(password, password_hash):
-            raise IdempotencyKeyConflictError()
-
-        if operation.status is RegistrationStatus.COMPLETED:
-            return RegistrationResult(
-                operation_id=operation.id,
-                user_id=operation.user_id,
-                outcome=RegistrationOutcome.COMPLETED,
-            )
-        if operation.status is RegistrationStatus.BLOCKED:
-            raise ProfileProvisioningUnavailableError()
-
-        now = self._clock()
-        owner_token = self._owner_token_factory()
-        async with self._scope_factory() as scope, scope.uow:
-            claimed = await scope.registrations.claim_by_key_hash(
-                operation.key_hash,
-                owner_token=owner_token,
-                claimed_at=now,
-                claim_expires_at=now + timedelta(seconds=self._claim_lease_seconds),
-            )
-        if claimed is None:
-            return self._pending_result(operation)
-        return await self.resume_claimed(claimed, owner_token=owner_token)
-
-    async def _load_by_key(self, key_hash: bytes) -> RegistrationOperation | None:
-        async with self._scope_factory() as scope, scope.uow:
-            return await scope.registrations.get_by_key_hash(key_hash)
 
     async def _finalize(
         self,
@@ -313,8 +196,9 @@ class RegistrationCoordinator(RegisterUserUseCaseProtocol, RegistrationAttemptPr
             self._observer.lost_claim()
         else:
             self._observer.retry_scheduled(error_class=type(error).__name__)
-        return self._pending_result(
+        return pending_result(
             operation,
+            now=self._clock(),
             retry_at=failed_at + timedelta(seconds=delay),
         )
 
@@ -338,30 +222,6 @@ class RegistrationCoordinator(RegisterUserUseCaseProtocol, RegistrationAttemptPr
             return
         self._observer.operation_blocked(error_class=type(error).__name__)
 
-    def _pending_result(
-        self,
-        operation: RegistrationOperation,
-        *,
-        retry_at: datetime | None = None,
-    ) -> RegistrationResult:
-        effective_retry_at = retry_at or operation.available_at
-        if (
-            retry_at is None
-            and operation.status is RegistrationStatus.CLAIMED
-            and operation.claim_expires_at is not None
-        ):
-            effective_retry_at = operation.claim_expires_at
-        retry_after_seconds = max(
-            1,
-            ceil((effective_retry_at - self._clock()).total_seconds()),
-        )
-        return RegistrationResult(
-            operation_id=operation.id,
-            user_id=operation.user_id,
-            outcome=RegistrationOutcome.PENDING,
-            retry_after_seconds=retry_after_seconds,
-        )
-
 
 class _LostRegistrationClaim(Exception):
     pass
@@ -369,21 +229,3 @@ class _LostRegistrationClaim(Exception):
 
 class _RegistrationFinalizationConflict(Exception):
     pass
-
-
-class RegistrationAdministrationService(RegistrationAdministrationProtocol):
-    def __init__(
-        self,
-        scope_factory: RegistrationScopeFactory,
-        *,
-        clock: Callable[[], datetime] = utc_now,
-    ) -> None:
-        self._scope_factory = scope_factory
-        self._clock = clock
-
-    async def redrive(self, operation_id: uuid.UUID) -> bool:
-        async with self._scope_factory() as scope, scope.uow:
-            return await scope.registrations.redrive_blocked(
-                operation_id,
-                available_at=self._clock(),
-            )

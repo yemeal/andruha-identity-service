@@ -17,16 +17,16 @@ from app.application.ports.repositories import (
 )
 from app.application.ports.security import PasswordHasherProtocol
 from app.application.ports.uow import AsyncUOWProtocol
-from app.application.services.registration import (
-    RegisterUserUseCaseProtocol,
-    RegistrationAdministrationProtocol,
-    RegistrationAdministrationService,
-    RegistrationAttemptProtocol,
-    RegistrationCoordinator,
-)
-from app.application.services.registration_reconciler import (
+from app.application.registration.reconciler import (
     RegistrationReconcilerProtocol,
     RegistrationReconcilerService,
+)
+from app.application.use_cases.redrive_registration.handler import (
+    RedriveRegistrationHandler,
+)
+from app.application.use_cases.register.handler import RegisterUserHandler
+from app.application.use_cases.resume_registration.handler import (
+    ResumeRegistrationHandler,
 )
 from app.core.settings import RegistrationSettings
 from app.infrastructure.observability.registration_metrics import (
@@ -60,20 +60,17 @@ class RegistrationProvider(Provider):
         return factory
 
     @dishka.provide
-    def coordinator(
+    def resume_handler(
         self,
         scope_factory: RegistrationScopeFactory,
         profile_provisioner: ProfileProvisionerProtocol,
-        password_hasher: PasswordHasherProtocol,
         observer: RegistrationObserverProtocol,
         settings: RegistrationSettings,
-    ) -> RegistrationCoordinator:
-        return RegistrationCoordinator(
+    ) -> ResumeRegistrationHandler:
+        return ResumeRegistrationHandler(
             scope_factory=scope_factory,
             profile_provisioner=profile_provisioner,
-            password_hasher=password_hasher,
             observer=observer,
-            claim_lease_seconds=settings.REGISTRATION_CLAIM_LEASE_SECONDS,
             retry_policy=RegistrationRetryPolicy(
                 initial_seconds=settings.REGISTRATION_RETRY_INITIAL_SECONDS,
                 max_seconds=settings.REGISTRATION_RETRY_MAX_SECONDS,
@@ -84,29 +81,32 @@ class RegistrationProvider(Provider):
         )
 
     @dishka.provide
-    def register_use_case(
-        self, coordinator: RegistrationCoordinator
-    ) -> RegisterUserUseCaseProtocol:
-        return coordinator
-
-    @dishka.provide
-    def registration_attempt(
-        self, coordinator: RegistrationCoordinator
-    ) -> RegistrationAttemptProtocol:
-        return coordinator
+    def register_handler(
+        self,
+        scope_factory: RegistrationScopeFactory,
+        password_hasher: PasswordHasherProtocol,
+        resume: ResumeRegistrationHandler,
+        settings: RegistrationSettings,
+    ) -> RegisterUserHandler:
+        return RegisterUserHandler(
+            scope_factory=scope_factory,
+            password_hasher=password_hasher,
+            resume=resume,
+            claim_lease_seconds=settings.REGISTRATION_CLAIM_LEASE_SECONDS,
+        )
 
     @dishka.provide
     def registration_administration(
         self,
         scope_factory: RegistrationScopeFactory,
-    ) -> RegistrationAdministrationProtocol:
-        return RegistrationAdministrationService(scope_factory)
+    ) -> RedriveRegistrationHandler:
+        return RedriveRegistrationHandler(scope_factory)
 
     @dishka.provide
     def reconciler(
         self,
         scope_factory: RegistrationScopeFactory,
-        attempt: RegistrationAttemptProtocol,
+        attempt: ResumeRegistrationHandler,
         observer: RegistrationObserverProtocol,
         settings: RegistrationSettings,
     ) -> RegistrationReconcilerProtocol:

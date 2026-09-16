@@ -1,4 +1,3 @@
-from contextlib import suppress
 from typing import Annotated, Any
 
 from dishka import FromDishka
@@ -11,6 +10,7 @@ from fastapi.security import (
     HTTPBearer,
 )
 
+from app.application.dto.token_pair import TokenPair
 from app.application.exceptions.idempotency import (
     IdempotencyKeyConflictError,
     IdempotencyRequestInProgressError,
@@ -18,17 +18,23 @@ from app.application.exceptions.idempotency import (
     RefreshReplayUnavailableError,
 )
 from app.application.exceptions.profiles import ProfileProvisioningUnavailableError
+from app.application.exceptions.security import InvalidTokenError
+from app.application.idempotency.fingerprint import hash_idempotency_key
 from app.application.ports.dto.registration import RegistrationOutcome
-from app.application.services.auth_service import AuthServiceProtocol, TokenPair
-from app.application.services.idempotency_fingerprint import hash_idempotency_key
-from app.application.services.refresh import RefreshUseCaseProtocol
-from app.application.services.registration import RegisterUserUseCaseProtocol
+from app.application.use_cases.get_current_user.handler import GetCurrentUserHandler
+from app.application.use_cases.get_current_user.query import GetCurrentUserQuery
+from app.application.use_cases.login.command import LoginCommand
+from app.application.use_cases.login.handler import LoginHandler
+from app.application.use_cases.logout.command import LogoutCommand
+from app.application.use_cases.logout.handler import LogoutHandler
+from app.application.use_cases.refresh.command import RefreshCommand
+from app.application.use_cases.refresh.handler import RefreshHandler
+from app.application.use_cases.register.command import RegisterUserCommand
+from app.application.use_cases.register.handler import RegisterUserHandler
 from app.core.settings import SecuritySettings
 from app.domain.exceptions import (
-    DomainErrors,
     InvalidCredentialsError,
     InvalidRefreshTokenError,
-    InvalidTokenError,
     UserAlreadyExistsError,
 )
 from app.entrypoints.http.routers.exception_handlers import (
@@ -46,12 +52,7 @@ from app.entrypoints.http.schemas.auth import (
 
 
 def _cookie_response(description: str) -> dict[int | str, dict[str, Any]]:
-    """
-    cookie-only ответ без ложной JSON-схемы.
-
-    OpenAPI объединяет повторяющиеся Set-Cookie в одно имя заголовка, поэтому
-    точное количество cookie фиксируется в description
-    """
+    """OpenAPI collapses Set-Cookie headers, so describe both cookies explicitly."""
     return {
         status.HTTP_204_NO_CONTENT: {
             "description": description,
@@ -174,12 +175,14 @@ def create_auth_router(
                 max_length=128,
             ),
         ],
-        registration: FromDishka[RegisterUserUseCaseProtocol],
+        registration: FromDishka[RegisterUserHandler],
     ) -> RegisterResponse | PendingRegistrationResponse:
         result = await registration.execute(
-            email=payload.email,
-            password=payload.password,
-            key_hash=hash_idempotency_key(idempotency_key),
+            RegisterUserCommand(
+                email=payload.email,
+                password=payload.password,
+                key_hash=hash_idempotency_key(idempotency_key),
+            )
         )
         _set_no_store_headers(response)
         if result.outcome is RegistrationOutcome.PENDING:
@@ -208,10 +211,12 @@ def create_auth_router(
     @inject
     async def login(
         payload: LoginRequest,
-        auth_service: FromDishka[AuthServiceProtocol],
+        handler: FromDishka[LoginHandler],
         settings: FromDishka[SecuritySettings],
     ) -> Response:
-        pair = await auth_service.login(email=payload.email, password=payload.password)
+        pair = await handler.execute(
+            LoginCommand(email=payload.email, password=payload.password)
+        )
 
         response = Response(status_code=status.HTTP_204_NO_CONTENT)
         _set_tokens_cookies(response, pair, settings)
@@ -231,17 +236,11 @@ def create_auth_router(
         async def login_test(
             payload: LoginRequest,
             response: Response,
-            auth_service: FromDishka[AuthServiceProtocol],
+            handler: FromDishka[LoginHandler],
         ) -> TestLoginResponse:
-            """
-            Вернуть токены только локальному integration test client.
-
-            Startup configuration is fail-closed and the gateway blocks this
-            exact path.
-            """
-            pair = await auth_service.login(
-                email=payload.email,
-                password=payload.password,
+            """Return tokens for local integration clients; disabled in production."""
+            pair = await handler.execute(
+                LoginCommand(email=payload.email, password=payload.password)
             )
             _set_no_store_headers(response)
             return TestLoginResponse.model_validate(pair.model_dump(mode="python"))
@@ -278,22 +277,18 @@ def create_auth_router(
                 max_length=128,
             ),
         ],
-        refresh_use_case: FromDishka[RefreshUseCaseProtocol],
+        refresh_use_case: FromDishka[RefreshHandler],
         settings: FromDishka[SecuritySettings],
     ) -> Response:
-        """
-        HTTP-граница делает одноразовую rotation безопасной для сетевых ретраев.
-
-        AuthService ничего не знает про Idempotency-Key: guard либо возвращает
-        готовую пару, либо разрешает ровно один вызов refresh use case.
-        """
         if refresh_token is None:
-            raise DomainErrors.Token.INVALID_REFRESH()
+            raise InvalidRefreshTokenError()
 
         try:
             pair = await refresh_use_case.execute(
-                refresh_token=refresh_token,
-                key_hash=hash_idempotency_key(idempotency_key.strip()),
+                RefreshCommand(
+                    refresh_token=refresh_token,
+                    key_hash=hash_idempotency_key(idempotency_key.strip()),
+                )
             )
         except InvalidRefreshTokenError:
             response = create_error_response(InvalidRefreshTokenError)
@@ -314,16 +309,14 @@ def create_auth_router(
     )
     @inject
     async def logout(
-        auth_service: FromDishka[AuthServiceProtocol],
+        handler: FromDishka[LogoutHandler],
         settings: FromDishka[SecuritySettings],
         refresh_token: Annotated[
             str | None,
             Cookie(alias="refresh_token"),
         ] = None,
     ) -> Response:
-        if refresh_token is not None:
-            with suppress(InvalidRefreshTokenError):
-                await auth_service.logout(refresh_token)
+        await handler.execute(LogoutCommand(refresh_token=refresh_token))
 
         response = Response(status_code=status.HTTP_204_NO_CONTENT)
         _delete_auth_cookies(response, settings)
@@ -336,16 +329,18 @@ def create_auth_router(
     @inject
     async def me(
         response: Response,
-        auth_service: FromDishka[AuthServiceProtocol],
+        handler: FromDishka[GetCurrentUserHandler],
         credentials: Annotated[
             HTTPAuthorizationCredentials | None,
             Security(internal_access_bearer),
         ] = None,
     ) -> MeResponse:
         if credentials is None:
-            raise DomainErrors.Token.INVALID()
+            raise InvalidTokenError()
 
-        user = await auth_service.get_current_user(str(credentials.credentials))
+        user = await handler.execute(
+            GetCurrentUserQuery(access_token=credentials.credentials)
+        )
         _set_no_store_headers(response)
         return MeResponse.model_validate(user)
 

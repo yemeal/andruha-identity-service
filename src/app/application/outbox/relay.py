@@ -71,13 +71,9 @@ class _NullOutboxRelayObserver(OutboxRelayObserverProtocol):
 
 
 class OutboxRelayService:
-    """
-    Высокопроизводительный конкурентный сервис Outbox Relay.
+    """Publish different keys concurrently, preserving FIFO within each key.
 
-    - Захватывает пачку сообщений через FOR UPDATE SKIP LOCKED.
-    - Параллельно отправляет сообщения с разными ключами в брокер.
-    - Сохраняет строгий порядок FIFO для сообщений с одинаковым key.
-    - Переводит успешные сообщения в SUCCESS, сбои — в RETRY или QUARANTINED.
+    Success is terminal; failed messages return to PENDING or enter QUARANTINED.
     """
 
     def __init__(

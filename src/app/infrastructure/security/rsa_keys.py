@@ -7,7 +7,7 @@ from cryptography.hazmat.primitives.asymmetric.rsa import (
     RSAPublicKey,
 )
 
-from app.domain.exceptions import DomainErrors
+from app.application.exceptions.security import InvalidTokenSigningKeyError
 
 MIN_RSA_KEY_SIZE_BITS = 2048
 
@@ -25,7 +25,7 @@ def load_rsa_private_key(path: Path) -> RSAPrivateKey:
     try:
         pem = path.read_bytes()
     except OSError as error:
-        raise DomainErrors.Token.INVALID_SIGNING_KEY() from error
+        raise InvalidTokenSigningKeyError() from error
 
     try:
         private_key = serialization.load_pem_private_key(
@@ -33,12 +33,12 @@ def load_rsa_private_key(path: Path) -> RSAPrivateKey:
             password=None,
         )
     except (TypeError, ValueError) as error:
-        raise DomainErrors.Token.INVALID_SIGNING_KEY() from error
+        raise InvalidTokenSigningKeyError() from error
 
     if not isinstance(private_key, RSAPrivateKey):
-        raise DomainErrors.Token.INVALID_SIGNING_KEY()
+        raise InvalidTokenSigningKeyError()
     if private_key.key_size < MIN_RSA_KEY_SIZE_BITS:
-        raise DomainErrors.Token.INVALID_SIGNING_KEY()
+        raise InvalidTokenSigningKeyError()
 
     return private_key
 
@@ -50,17 +50,17 @@ def load_rsa_public_key(path: Path) -> RSAPublicKey:
     try:
         pem = path.read_bytes()
     except OSError as error:
-        raise DomainErrors.Token.INVALID_SIGNING_KEY() from error
+        raise InvalidTokenSigningKeyError() from error
 
     try:
         public_key = serialization.load_pem_public_key(pem)
     except (TypeError, ValueError) as error:
-        raise DomainErrors.Token.INVALID_SIGNING_KEY() from error
+        raise InvalidTokenSigningKeyError() from error
 
     if not isinstance(public_key, RSAPublicKey):
-        raise DomainErrors.Token.INVALID_SIGNING_KEY()
+        raise InvalidTokenSigningKeyError()
     if public_key.key_size < MIN_RSA_KEY_SIZE_BITS:
-        raise DomainErrors.Token.INVALID_SIGNING_KEY()
+        raise InvalidTokenSigningKeyError()
 
     return public_key
 
@@ -76,7 +76,7 @@ def load_rsa_key_pair(
     public_key = load_rsa_public_key(public_key_path)
 
     if private_key.public_key().public_numbers() != public_key.public_numbers():
-        raise DomainErrors.Token.INVALID_SIGNING_KEY()
+        raise InvalidTokenSigningKeyError()
 
     return RSAKeyPair(
         private_key=private_key,

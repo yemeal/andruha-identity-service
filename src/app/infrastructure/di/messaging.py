@@ -4,6 +4,7 @@ import dishka
 from dishka import AsyncContainer, Provider, Scope
 from faststream.kafka import KafkaBroker
 
+from app.application.outbox.relay import OutboxRelayService
 from app.application.policies.outbox_retry import OutboxRetryPolicy
 from app.application.ports.events.publisher import BrokerPublisherProtocol
 from app.application.ports.outbox.scope_factory import (
@@ -12,7 +13,6 @@ from app.application.ports.outbox.scope_factory import (
 )
 from app.application.ports.repositories.outbox import OutboxRepositoryProtocol
 from app.application.ports.uow import AsyncUOWProtocol
-from app.application.services.outbox_relay import OutboxRelayService
 from app.core.settings import KafkaSettings, OutboxSettings
 from app.infrastructure.messaging.kafka_publisher import FastStreamKafkaPublisher
 

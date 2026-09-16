@@ -8,6 +8,33 @@ The service uses FastAPI and FastStream with strict hexagonal boundaries:
 
 ---
 
+## Domain and Use Cases
+
+Pydantic is deliberately used in the domain. Business models are frozen, validate
+complete candidate state before applying changes, and raise domain errors for
+invalid transitions. `User` and `AuthSession` are aggregate roots;
+`RefreshToken` is an entity owned by the session. Rotation consumes the presented
+token, creates its replacement, and updates the session through the root.
+
+Application handlers live under `application/use_cases/<name>/` with explicit
+commands or queries: register, login, refresh, logout, get_current_user,
+resume_registration, and redrive_registration. Login closes its read transaction
+before checking the password, then re-reads the account under a lock.
+The current-user result contains no password hash.
+
+Technical coordination lives in `application/idempotency`,
+`application/registration`, and `application/outbox`. The session repository
+persists the root and token changes in the caller's transaction; application
+handlers have no separate token CRUD port.
+
+Database failures become application persistence errors at the UoW boundary.
+Registration retries temporary storage failures and transaction conflicts.
+Deterministic failures block the operation for investigation and explicit redrive.
+JWT issuance/configuration failures are server errors; rejected credentials remain
+authentication errors. Public responses use fixed codes and messages.
+Exception logs retain types and stack locations without exception text, SQL
+parameters, source lines, or local values.
+
 ## Architecture and Entrypoints
 
 The service provides three independent entrypoint processes built from the same codebase:
@@ -100,7 +127,7 @@ User registration publishes integration event `identity.user_registered.v1` (def
 * **Lease-based Concurrency**: The relay worker claims batches using atomic CTE leases with `FOR UPDATE SKIP LOCKED`.
 * **Partitioned Concurrency with Strict FIFO**: Messages are grouped by partition key (`user_id`). Disjoint keys publish concurrently via `asyncio.gather`, while messages with identical keys execute in strict FIFO sequence.
 * **Transient & Permanent Failure Handling**:
-  * Network timeouts / Kafka broker disconnections trigger exponential backoff with full jitter and reschedule `available_at`.
+  * Network timeouts / Kafka broker disconnections trigger exponential backoff with bounded proportional jitter and reschedule `available_at`.
   * Malformed payloads or schema violations are immediately moved to `QUARANTINED` status without blocking healthy partitions.
 * **Lease Recovery**: If a relay worker crashes midway, its expired lease is safely recovered by another worker once `claim_expires_at` passes.
 
@@ -116,7 +143,7 @@ Raw idempotency keys and raw tokens are never persisted. The durable and Valkey 
 
 ## Configuration and Keys
 
-Configuration is loaded into strongly-typed Pydantic settings models (`AppSettings`, `PostgresSettings`, `ValkeySettings`, `KafkaSettings`, `OutboxSettings`, `SecuritySettings`, `LoggingSettings`).
+Configuration is loaded into strongly-typed Pydantic settings models (`AppSettings`, `PostgresSettings`, `ValkeySettings`, `KafkaSettings`, `OutboxSettings`, `SecuritySettings`, `IdempotencySettings`, `ProfileServiceSettings`, `RegistrationSettings`).
 
 See `.env.example` for non-secret configuration. Key settings include:
 
@@ -143,11 +170,12 @@ openssl rand -out C:\Projects\Andruha\.secrets\identity\replay-v1.key 32
 
 Alembic manages all schema migrations for the durable PostgreSQL store:
 
-* `users`: Credentials, salt, roles, registration timestamp.
+* `users`: Credentials, account status, roles, and registration timestamp.
 * `auth_sessions`: Active and revoked authentication sessions.
 * `refresh_tokens`: Rotated cryptographically hashed tokens.
 * `idempotency_records`: Encrypted replay results and concurrency fences.
 * `outbox`: Transactional outbox buffer with dispatch indexes and lifecycle constraints.
+* `registration_operations`: Durable registration progress, leases, and recovery state.
 
 ```powershell
 poetry run alembic upgrade head
@@ -158,7 +186,8 @@ poetry run alembic downgrade base
 
 ## Verification & Testing
 
-The service is fully covered with both unit and end-to-end integration tests against real PostgreSQL and Valkey Testcontainers:
+Unit tests cover domain transitions, commands, error boundaries, and recovery.
+Integration tests use disposable PostgreSQL and Valkey containers with an HTTP Profile test peer:
 
 ```powershell
 poetry sync --with dev --no-root

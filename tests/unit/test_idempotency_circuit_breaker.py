@@ -21,7 +21,7 @@ from app.application.ports.dto.idempotency import (
     CompletedIdempotencyResult,
     StoredResult,
 )
-from app.application.services.idempotency_fingerprint import (
+from app.application.idempotency.fingerprint import (
     compute_request_hash,
     hash_idempotency_key,
 )
@@ -122,11 +122,7 @@ class TestFullHotStoreProtocol:
         method: str,
         args: tuple[Any, ...],
     ) -> None:
-        """
-        Проверяем: adapter покрывает acquire, heartbeat, completion и cleanup.
-        Успех: каждый вызов проходит ровно через один cb.call и внутренний HotStore.
-        Нежелательное поведение: часть протокола обходит fail-fast или даёт AttributeError.
-        """
+        """adapter покрывает acquire, heartbeat, completion и cleanup."""
         inner = FakeHotStore()
         circuit_breaker = RecordingCircuitBreaker()
         store = CircuitBreakingHotStore(
@@ -142,11 +138,7 @@ class TestFullHotStoreProtocol:
 
 class TestErrorMapping:
     async def test_open_circuit_becomes_known_storage_outage(self) -> None:
-        """
-        Проверяем: core не зависит от infrastructure CircuitBreakerError.
-        Успех: open circuit маппится в IdempotencyStorageUnavailableError.
-        Нежелательное поведение: coordinator не включает durable fallback.
-        """
+        """core не зависит от infrastructure CircuitBreakerError."""
         inner = FakeHotStore()
         store = CircuitBreakingHotStore(
             inner=inner,
@@ -166,11 +158,7 @@ class TestErrorMapping:
     async def test_inner_storage_outage_is_not_retyped_as_programming_error(
         self,
     ) -> None:
-        """
-        Проверяем: Redis adapter outage проходит через breaker failure filter.
-        Успех: наружу выходит тот же application storage-unavailable тип.
-        Нежелательное поведение: известный outage маскируется неожиданной ошибкой.
-        """
+        """Redis adapter outage проходит через breaker failure filter."""
         inner = FakeHotStore(error=IdempotencyStorageUnavailableError())
         store = CircuitBreakingHotStore(
             inner=inner,
@@ -181,11 +169,7 @@ class TestErrorMapping:
             await store.renew(_identity(), uuid.uuid4(), 60)
 
     async def test_unexpected_inner_error_propagates(self) -> None:
-        """
-        Проверяем: adapter не скрывает contract и programming failures.
-        Успех: RuntimeError пробрасывается без маппинга в graceful degradation.
-        Нежелательное поведение: bug незаметно отправляет весь трафик в DB slow path.
-        """
+        """adapter не скрывает contract и programming failures."""
         inner = FakeHotStore(error=RuntimeError("broken parser"))
         store = CircuitBreakingHotStore(
             inner=inner,

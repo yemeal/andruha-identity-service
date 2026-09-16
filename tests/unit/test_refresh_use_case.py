@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.domain.exceptions import InvalidRefreshTokenError
 
 import hashlib
 import uuid
@@ -17,23 +18,23 @@ from app.application.ports.dto.idempotency import (
     CompletedIdempotencyResult,
     ExecutionResult,
 )
-from app.application.services.auth_service import TokenPair
-from app.application.services.idempotency_fingerprint import compute_request_hash
-from app.application.services.refresh import (
+from app.application.dto.token_pair import TokenPair
+from app.application.use_cases.refresh.command import RefreshCommand
+from app.application.idempotency.fingerprint import compute_request_hash
+from app.application.use_cases.refresh.handler import (
     PUBLIC_REFRESH_SUBJECT,
     REFRESH_OPERATION,
     REJECTED_RESULT,
     SUCCESS_RESULT,
-    RefreshUseCase,
+    RefreshHandler,
     replay_aad,
 )
 from app.application.value_objects.idempotency import (
     ExecutionOutcome,
     IdempotencyIdentity,
 )
-from app.domain.auth_sessions import AuthSession
-from app.domain.exceptions import InvalidRefreshTokenError
-from app.domain.refresh_tokens import RefreshToken
+from app.domain.aggregates.auth_session import AuthSession
+from app.domain.entities.refresh_token import RefreshToken
 
 
 class FakeCodec:
@@ -57,10 +58,8 @@ class FakeCoordinator:
         _operation: Any,
         *,
         lease_seconds: int,
-        prepare: Any = None,
     ) -> ExecutionResult:
         assert lease_seconds == 30
-        assert prepare is None
         self.identity = identity
         self.request_hash = request_hash
         return self.result
@@ -75,10 +74,12 @@ class FakeTokenRepository:
 
 
 class FakeSessionRepository:
-    def __init__(self, session: AuthSession | None) -> None:
-        self.session = session
+    def __init__(self, session: AuthSession | None, token: RefreshToken) -> None:
+        self.session = (
+            session.model_copy(update={"refresh_token": token}) if session else None
+        )
 
-    async def get(self, _entity_id: uuid.UUID) -> AuthSession | None:
+    async def get_by_refresh_id(self, _entity_id: uuid.UUID) -> AuthSession | None:
         return self.session
 
 
@@ -122,15 +123,17 @@ def _fixture(
     token_used: bool = False,
     session_active: bool = True,
     protector_fails: bool = False,
-) -> tuple[RefreshUseCase, FakeCoordinator, TrackingUOW, FakeProtector]:
+) -> tuple[RefreshHandler, FakeCoordinator, TrackingUOW, FakeProtector]:
     now = datetime.now(UTC)
     session = AuthSession(
         user_id=uuid.uuid4(),
+        created_at=now,
         idle_expires_at=now + timedelta(minutes=5),
         revoked_at=None if session_active else now,
     )
     token = RefreshToken(
         session_id=session.id,
+        created_at=now,
         token_hash=b"t" * 32,
         used_at=now if token_used else None,
     )
@@ -152,11 +155,10 @@ def _fixture(
         TokenPair(access_token="returned-access", refresh_token="returned-refresh"),
         fail=protector_fails,
     )
-    use_case = RefreshUseCase(
+    use_case = RefreshHandler(
         coordinator,
         cast(Any, object()),
-        cast(Any, FakeTokenRepository(token)),
-        cast(Any, FakeSessionRepository(session)),
+        cast(Any, FakeSessionRepository(session, token)),
         FakeCodec(),
         protector,
         uow,
@@ -168,7 +170,9 @@ def _fixture(
 async def test_active_replay_restores_exact_pair_after_freshness_check() -> None:
     use_case, coordinator, uow, protector = _fixture()
 
-    pair = await use_case.execute(refresh_token="presented", key_hash=b"k" * 32)
+    pair = await use_case.execute(
+        RefreshCommand(refresh_token="presented", key_hash=b"k" * 32)
+    )
 
     assert pair == TokenPair(
         access_token="returned-access", refresh_token="returned-refresh"
@@ -198,7 +202,9 @@ async def test_stale_replay_is_rejected_before_decryption(
     )
 
     with pytest.raises(InvalidRefreshTokenError):
-        await use_case.execute(refresh_token="presented", key_hash=b"k" * 32)
+        await use_case.execute(
+            RefreshCommand(refresh_token="presented", key_hash=b"k" * 32)
+        )
 
     assert uow.entries == 1
     assert protector.aad is None
@@ -217,7 +223,9 @@ async def test_nonterminal_outcomes_map_to_typed_errors(
     use_case, _coordinator, uow, _protector = _fixture(outcome)
 
     with pytest.raises(expected_error):
-        await use_case.execute(refresh_token="presented", key_hash=b"k" * 32)
+        await use_case.execute(
+            RefreshCommand(refresh_token="presented", key_hash=b"k" * 32)
+        )
 
     assert uow.entries == 0
 
@@ -226,7 +234,9 @@ async def test_terminal_rejection_replays_as_safe_auth_failure() -> None:
     use_case, _coordinator, uow, _protector = _fixture(result_type=REJECTED_RESULT)
 
     with pytest.raises(InvalidRefreshTokenError):
-        await use_case.execute(refresh_token="presented", key_hash=b"k" * 32)
+        await use_case.execute(
+            RefreshCommand(refresh_token="presented", key_hash=b"k" * 32)
+        )
 
     assert uow.entries == 0
 
@@ -235,6 +245,8 @@ async def test_undecryptable_envelope_fails_closed() -> None:
     use_case, _coordinator, uow, _protector = _fixture(protector_fails=True)
 
     with pytest.raises(RefreshReplayUnavailableError):
-        await use_case.execute(refresh_token="presented", key_hash=b"k" * 32)
+        await use_case.execute(
+            RefreshCommand(refresh_token="presented", key_hash=b"k" * 32)
+        )
 
     assert uow.entries == 1

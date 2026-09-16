@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from faststream.kafka import KafkaBroker
 
-from app.application.services.outbox_relay import OutboxRelayService
+from app.application.outbox.relay import OutboxRelayService
 from app.core.settings import Settings
 from app.entrypoints.messaging.relay import _setup_signal_handlers, main
 

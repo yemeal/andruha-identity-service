@@ -17,7 +17,7 @@ from app.infrastructure.database.models import (
 )
 from tests.integration.profile_server import ProfilePeer
 
-from app.application.services.registration_reconciler import (
+from app.application.registration.reconciler import (
     RegistrationReconcilerProtocol,
 )
 from app.core.settings import get_settings

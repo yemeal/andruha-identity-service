@@ -13,7 +13,12 @@ from app.application.ports.registration_recovery import (
     RegistrationObserverProtocol,
     RegistrationScopeFactory,
 )
-from app.application.services.registration import RegistrationAttemptProtocol
+from app.application.use_cases.resume_registration.command import (
+    ResumeRegistrationCommand,
+)
+from app.application.use_cases.resume_registration.handler import (
+    ResumeRegistrationHandler,
+)
 from app.domain.base import utc_now
 
 logger = structlog.get_logger(__name__)
@@ -32,7 +37,7 @@ class RegistrationReconcilerService(RegistrationReconcilerProtocol):
         self,
         *,
         scope_factory: RegistrationScopeFactory,
-        attempt: RegistrationAttemptProtocol,
+        attempt: ResumeRegistrationHandler,
         observer: RegistrationObserverProtocol,
         claim_lease_seconds: float,
         clock: Callable[[], datetime] = utc_now,
@@ -68,9 +73,10 @@ class RegistrationReconcilerService(RegistrationReconcilerProtocol):
 
         async def process(operation) -> None:
             try:
-                await self._attempt.resume_claimed(
-                    operation,
-                    owner_token=owner_token,
+                await self._attempt.execute(
+                    ResumeRegistrationCommand(
+                        operation=operation, owner_token=owner_token
+                    )
                 )
             except ProfileProvisioningUnavailableError:
                 logger.warning(

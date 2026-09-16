@@ -23,8 +23,8 @@ from app.application.ports.dto.idempotency import (
     CompletedIdempotencyResult,
     StoredResult,
 )
-from app.application.services.durable_idempotency import DurableExecutionService
-from app.application.services.idempotency_fingerprint import (
+from app.application.idempotency.durable import DurableExecutionService
+from app.application.idempotency.fingerprint import (
     compute_request_hash,
     hash_idempotency_key,
 )
@@ -34,7 +34,7 @@ from app.application.value_objects.idempotency import (
     IdempotencyIdentity,
 )
 from app.core.settings import get_settings
-from app.domain.users import User
+from app.domain.aggregates.user import User
 from app.entrypoints.http.main import create_app
 from app.infrastructure.cache.valkey_idempotency_store import (
     ValkeyHotIdempotencyStore,

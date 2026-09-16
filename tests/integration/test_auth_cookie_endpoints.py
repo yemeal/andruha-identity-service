@@ -1,3 +1,12 @@
+from app.domain.exceptions import (
+    UserAlreadyExistsError,
+    InvalidCredentialsError,
+    InvalidRefreshTokenError,
+)
+from app.application.exceptions.security import (
+    TokenExpiredError,
+    InvalidTokenConfigurationError,
+)
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import cast
@@ -20,19 +29,20 @@ from app.application.ports.dto.registration import (
     RegistrationOutcome,
     RegistrationResult,
 )
-from app.application.services.auth_service import (
-    AuthServiceProtocol,
-    TokenPair,
-)
-from app.application.services.idempotency_fingerprint import hash_idempotency_key
-from app.application.services.registration import RegisterUserUseCaseProtocol
-from app.application.services.refresh import RefreshUseCaseProtocol
+from app.application.dto.token_pair import TokenPair
+from app.application.use_cases.login.handler import LoginHandler
+from app.application.use_cases.login.command import LoginCommand
+from app.application.use_cases.logout.handler import LogoutHandler
+from app.application.use_cases.logout.command import LogoutCommand
+from app.application.use_cases.get_current_user.handler import GetCurrentUserHandler
+from app.application.use_cases.get_current_user.query import GetCurrentUserQuery
+from app.application.use_cases.refresh.command import RefreshCommand
+from app.application.use_cases.register.command import RegisterUserCommand
+from app.application.idempotency.fingerprint import hash_idempotency_key
+from app.application.use_cases.register.handler import RegisterUserHandler
+from app.application.use_cases.refresh.handler import RefreshHandler
 from app.core.settings import SecuritySettings, Settings
-from app.domain.exceptions import (
-    DomainErrors,
-    InvalidTokenConfigurationError,
-)
-from app.domain.users import User
+from app.domain.aggregates.user import User
 from app.entrypoints.http.routers import create_api_router
 from app.entrypoints.http.routers.exception_handlers import (
     register_exception_handlers,
@@ -54,15 +64,23 @@ class _AuthEndpointProvider(Provider):
         self._settings = settings
 
     @provide(scope=Scope.REQUEST)
-    def get_auth_service(self) -> AuthServiceProtocol:
-        return self._auth_service
+    def get_login(self) -> LoginHandler:
+        return self._auth_service.login
 
     @provide(scope=Scope.REQUEST)
-    def get_refresh_use_case(self) -> RefreshUseCaseProtocol:
+    def get_logout(self) -> LogoutHandler:
+        return self._auth_service.logout
+
+    @provide(scope=Scope.REQUEST)
+    def get_current_user(self) -> GetCurrentUserHandler:
+        return self._auth_service.get_current_user
+
+    @provide(scope=Scope.REQUEST)
+    def get_refresh_use_case(self) -> RefreshHandler:
         return self._refresh_use_case
 
     @provide(scope=Scope.REQUEST)
-    def get_registration_use_case(self) -> RegisterUserUseCaseProtocol:
+    def get_registration_use_case(self) -> RegisterUserHandler:
         return self._registration_use_case
 
     @provide(scope=Scope.APP)
@@ -79,9 +97,13 @@ async def _auth_http_context(
     *,
     include_test_token_endpoint: bool,
 ):
-    auth_service = AsyncMock(spec=AuthServiceProtocol)
-    refresh_use_case = AsyncMock(spec=RefreshUseCaseProtocol)
-    registration_use_case = AsyncMock(spec=RegisterUserUseCaseProtocol)
+    auth_service = SimpleNamespace(
+        login=AsyncMock(spec=LoginHandler),
+        logout=AsyncMock(spec=LogoutHandler),
+        get_current_user=AsyncMock(spec=GetCurrentUserHandler),
+    )
+    refresh_use_case = AsyncMock(spec=RefreshHandler)
+    registration_use_case = AsyncMock(spec=RegisterUserHandler)
     settings = cast(
         Settings,
         SimpleNamespace(
@@ -145,11 +167,7 @@ def _cookie_headers(response) -> dict[str, str]:
 
 class TestRegisterEndpoint:
     async def test_returns_only_public_user_id(self, auth_http) -> None:
-        """
-        Проверяем: регистрация возвращает публичный идентификатор без токенов.
-        Успех: 201 содержит только userId и нормализует email до application.
-        Нежелательное поведение: model_validate ищет отсутствующий user_id в User.
-        """
+        """регистрация возвращает публичный идентификатор без токенов."""
         client, _auth_service, _app = auth_http
         registration = _app.state.registration_use_case
         user = User(
@@ -175,9 +193,11 @@ class TestRegisterEndpoint:
         assert response.json() == {"userId": str(user.id)}
         assert "set-cookie" not in response.headers
         registration.execute.assert_awaited_once_with(
-            email="user@example.com",
-            password="strong-password",
-            key_hash=hash_idempotency_key("register-key-123"),
+            RegisterUserCommand(
+                email="user@example.com",
+                password="strong-password",
+                key_hash=hash_idempotency_key("register-key-123"),
+            )
         )
 
     async def test_pending_registration_returns_202_and_retry_after(
@@ -232,14 +252,10 @@ class TestRegisterEndpoint:
         app.state.registration_use_case.execute.assert_not_awaited()
 
     async def test_duplicate_email_uses_public_conflict(self, auth_http) -> None:
-        """
-        Проверяем: доменный конфликт регистрации проходит через общий handler.
-        Успех: клиент получает безопасный 409 без cookie и внутренних деталей.
-        Нежелательное поведение: duplicate email превращается в HTTP 500.
-        """
+        """доменный конфликт регистрации проходит через общий handler."""
         client, _auth_service, _app = auth_http
         registration = _app.state.registration_use_case
-        registration.execute.side_effect = DomainErrors.User.EMAIL_ALREADY_EXISTS()
+        registration.execute.side_effect = UserAlreadyExistsError()
 
         response = await client.post(
             "/api/v1/auth/register",
@@ -258,11 +274,7 @@ class TestRegisterEndpoint:
         self,
         auth_http,
     ) -> None:
-        """
-        Проверяем: FastAPI отклоняет невалидный registration body.
-        Успех: 422 использует стабильную схему без исходного password.
-        Нежелательное поведение: password попадает в detail или input.
-        """
+        """FastAPI отклоняет невалидный registration body."""
         client, _auth_service, _app = auth_http
         registration = _app.state.registration_use_case
         password = "secret-that-must-not-be-echoed"
@@ -290,13 +302,9 @@ class TestLoginCookieEndpoint:
         self,
         auth_http,
     ) -> None:
-        """
-        Проверяем: успешный login передает оба токена только через cookie.
-        Успех: 204 без body, обе cookie HttpOnly Secure и с заданными путями.
-        Нежелательное поведение: токены попадают в JSON или доступны JavaScript.
-        """
+        """успешный login передает оба токена только через cookie."""
         client, auth_service, _app = auth_http
-        auth_service.login.return_value = TokenPair(
+        auth_service.login.execute.return_value = TokenPair(
             access_token="access-secret",
             refresh_token="refresh-secret",
         )
@@ -332,19 +340,17 @@ class TestLoginCookieEndpoint:
         assert "Max-Age=2592000" in refresh_cookie
         assert "Path=/api/v1/auth" in refresh_cookie
 
-        auth_service.login.assert_awaited_once_with(
-            email="user@example.com",
-            password="plain-password",
+        auth_service.login.execute.assert_awaited_once_with(
+            LoginCommand(
+                email="user@example.com",
+                password="plain-password",
+            )
         )
 
     async def test_invalid_credentials_set_no_cookies(self, auth_http) -> None:
-        """
-        Проверяем: неуспешный login не меняет cookie клиента.
-        Успех: единый 401 приходит без Set-Cookie.
-        Нежелательное поведение: ошибочный вход оставляет частичный auth-state.
-        """
+        """неуспешный login не меняет cookie клиента."""
         client, auth_service, _app = auth_http
-        auth_service.login.side_effect = DomainErrors.Auth.INVALID_CREDENTIALS()
+        auth_service.login.execute.side_effect = InvalidCredentialsError()
 
         response = await client.post(
             "/api/v1/auth/login",
@@ -381,15 +387,15 @@ class TestRefreshCookieEndpoint:
         assert set(_cookie_headers(response)) == {"access_token", "refresh_token"}
         assert response.headers["Cache-Control"] == "no-store"
         refresh_use_case.execute.assert_awaited_once_with(
-            refresh_token="presented-refresh-secret",
-            key_hash=hash_idempotency_key("stable-refresh-key"),
+            RefreshCommand(
+                refresh_token="presented-refresh-secret",
+                key_hash=hash_idempotency_key("stable-refresh-key"),
+            )
         )
 
     async def test_stale_refresh_replay_clears_both_cookies(self, auth_http) -> None:
         client, _auth_service, app = auth_http
-        app.state.refresh_use_case.execute.side_effect = (
-            DomainErrors.Token.INVALID_REFRESH()
-        )
+        app.state.refresh_use_case.execute.side_effect = InvalidRefreshTokenError()
 
         response = await client.post(
             "/api/v1/auth/refresh",
@@ -460,11 +466,7 @@ class TestRefreshCookieEndpoint:
         self,
         auth_http,
     ) -> None:
-        """
-        Проверяем: production-like OpenAPI отражает cookie-only контракт.
-        Успех: test token route и его response schema полностью отсутствуют.
-        Нежелательное поведение: production schema раскрывает test-only login.
-        """
+        """production-like OpenAPI отражает cookie-only контракт."""
         _client, _auth_service, app = auth_http
 
         openapi = app.openapi()
@@ -509,11 +511,7 @@ class TestRefreshCookieEndpoint:
 
 class TestTokenLoginEndpoint:
     async def test_route_is_absent_when_disabled(self, auth_http) -> None:
-        """
-        Проверяем: test token endpoint выключен при fail-closed configuration.
-        Успех: route отвечает 404 и отсутствует в OpenAPI.
-        Нежелательное поведение: production раскрывает endpoint или login flow.
-        """
+        """test token endpoint выключен при fail-closed configuration."""
         client, auth_service, app = auth_http
 
         response = await client.post(
@@ -526,19 +524,15 @@ class TestTokenLoginEndpoint:
 
         assert response.status_code == 404
         assert "/api/v1/auth/login/test" not in app.openapi()["paths"]
-        auth_service.login.assert_not_awaited()
+        auth_service.login.execute.assert_not_awaited()
 
     async def test_returns_tokens_without_cookies(
         self,
         auth_http_with_test_token_endpoint,
     ) -> None:
-        """
-        Проверяем: явно включенный test login использует обычный AuthService.
-        Успех: 200 содержит оба токена, no-store и не устанавливает cookie.
-        Нежелательное поведение: endpoint обходит login или смешивает transports.
-        """
+        """The test endpoint delegates to the same login handler."""
         client, auth_service, app = auth_http_with_test_token_endpoint
-        auth_service.login.return_value = TokenPair(
+        auth_service.login.execute.return_value = TokenPair(
             access_token="access-secret",
             refresh_token="refresh-secret",
         )
@@ -561,22 +555,20 @@ class TestTokenLoginEndpoint:
         assert "set-cookie" not in response.headers
         assert "/api/v1/auth/login/test" in app.openapi()["paths"]
         assert "TestLoginResponse" in app.openapi()["components"]["schemas"]
-        auth_service.login.assert_awaited_once_with(
-            email="user@example.com",
-            password="plain-password",
+        auth_service.login.execute.assert_awaited_once_with(
+            LoginCommand(
+                email="user@example.com",
+                password="plain-password",
+            )
         )
 
     async def test_invalid_credentials_return_no_tokens(
         self,
         auth_http_with_test_token_endpoint,
     ) -> None:
-        """
-        Проверяем: test login сохраняет штатную invalid credentials boundary.
-        Успех: неверный пароль дает безопасный 401 без body-токенов и cookie.
-        Нежелательное поведение: test endpoint ослабляет authentication checks.
-        """
+        """test login сохраняет штатную invalid credentials boundary."""
         client, auth_service, _app = auth_http_with_test_token_endpoint
-        auth_service.login.side_effect = DomainErrors.Auth.INVALID_CREDENTIALS()
+        auth_service.login.execute.side_effect = InvalidCredentialsError()
 
         response = await client.post(
             "/api/v1/auth/login/test",
@@ -595,11 +587,7 @@ class TestTokenLoginEndpoint:
 
 class TestTokenLoginConfiguration:
     def test_production_cannot_enable_token_response(self) -> None:
-        """
-        Проверяем: production configuration пытается включить test token route.
-        Успех: Settings fail-fast отклоняет опасную комбинацию.
-        Нежелательное поведение: production стартует с token response endpoint.
-        """
+        """production configuration пытается включить test token route."""
         with pytest.raises(InvalidTokenConfigurationError):
             Settings(
                 _env_file=None,
@@ -617,11 +605,7 @@ class TestTokenLoginConfiguration:
             )
 
     def test_test_environment_can_enable_token_response(self) -> None:
-        """
-        Проверяем: integration test configuration явно включает token route.
-        Успех: вычисленный startup flag равен true только вне production.
-        Нежелательное поведение: безопасный configuration невозможно включить.
-        """
+        """integration test configuration явно включает token route."""
         settings = Settings(
             _env_file=None,
             DATABASE_HOST="localhost",
@@ -645,11 +629,7 @@ class TestLogoutCookieEndpoint:
         self,
         auth_http,
     ) -> None:
-        """
-        Проверяем: успешный logout закрывает server-side family и browser state.
-        Успех: 204 удаляет обе cookie с исходными path и security flags.
-        Нежелательное поведение: клиент сохраняет один из auth-токенов.
-        """
+        """успешный logout закрывает server-side family и browser state."""
         client, auth_service, _app = auth_http
 
         response = await client.post(
@@ -681,14 +661,12 @@ class TestLogoutCookieEndpoint:
         assert "Secure" in refresh_cookie
         assert "SameSite=lax" in refresh_cookie
         assert "Path=/api/v1/auth" in refresh_cookie
-        auth_service.logout.assert_awaited_once_with("refresh-secret")
+        auth_service.logout.execute.assert_awaited_once_with(
+            LogoutCommand(refresh_token="refresh-secret")
+        )
 
     async def test_missing_cookie_is_idempotent_success(self, auth_http) -> None:
-        """
-        Проверяем: повторный HTTP logout после удаления refresh-cookie.
-        Успех: endpoint снова отвечает 204 и очищает browser state.
-        Нежелательное поведение: второй logout превращается в validation error.
-        """
+        """повторный HTTP logout после удаления refresh-cookie."""
         client, auth_service, _app = auth_http
 
         response = await client.post("/api/v1/auth/logout")
@@ -698,19 +676,15 @@ class TestLogoutCookieEndpoint:
             "access_token",
             "refresh_token",
         }
-        auth_service.logout.assert_not_awaited()
+        auth_service.logout.execute.assert_awaited_once_with(LogoutCommand())
 
     async def test_unknown_refresh_is_safe_idempotent_success(
         self,
         auth_http,
     ) -> None:
-        """
-        Проверяем: неизвестная cookie не раскрывает наличие token family.
-        Успех: INVALID_REFRESH преобразуется в 204 с удалением cookie.
-        Нежелательное поведение: logout становится oracle существования токена.
-        """
+        """неизвестная cookie не раскрывает наличие token family."""
         client, auth_service, _app = auth_http
-        auth_service.logout.side_effect = DomainErrors.Token.INVALID_REFRESH()
+        auth_service.logout.execute.return_value = None
 
         response = await client.post(
             "/api/v1/auth/logout",
@@ -729,11 +703,7 @@ class TestMeInternalBearerEndpoint:
         self,
         auth_http,
     ) -> None:
-        """
-        Проверяем: внутренний /me вызван напрямую с browser cookie.
-        Успех: cookie не считается credential без Gateway Bearer header.
-        Нежелательное поведение: сервис сохраняет скрытый dual transport.
-        """
+        """внутренний /me вызван напрямую с browser cookie."""
         client, auth_service, _app = auth_http
 
         response = await client.get(
@@ -743,23 +713,19 @@ class TestMeInternalBearerEndpoint:
 
         assert response.status_code == 401
         assert response.json()["code"] == "auth.invalid_token"
-        auth_service.get_current_user.assert_not_awaited()
+        auth_service.get_current_user.execute.assert_not_awaited()
 
     async def test_returns_current_user_from_gateway_bearer(
         self,
         auth_http,
     ) -> None:
-        """
-        Проверяем: Gateway передал access-cookie внутренним Bearer header.
-        Успех: /me возвращает профиль и не создает token response.
-        Нежелательное поведение: endpoint повторно ищет browser cookie.
-        """
+        """Gateway передал access-cookie внутренним Bearer header."""
         client, auth_service, _app = auth_http
         user = User(
             email="user@example.com",
             password_hash="stored-hash",
         )
-        auth_service.get_current_user.return_value = user
+        auth_service.get_current_user.execute.return_value = user
 
         response = await client.get(
             "/api/v1/auth/me",
@@ -776,19 +742,17 @@ class TestMeInternalBearerEndpoint:
         assert response.headers["Cache-Control"] == "no-store"
         assert response.headers["Pragma"] == "no-cache"
         assert "set-cookie" not in response.headers
-        auth_service.get_current_user.assert_awaited_once_with("access-secret")
+        auth_service.get_current_user.execute.assert_awaited_once_with(
+            GetCurrentUserQuery(access_token="access-secret")
+        )
 
     async def test_invalid_access_uses_public_unauthorized(
         self,
         auth_http,
     ) -> None:
-        """
-        Проверяем: verifier отклоняет access-cookie на HTTP-границе.
-        Успех: клиент получает безопасный 401 без очистки refresh-cookie.
-        Нежелательное поведение: token exception превращается в HTTP 500.
-        """
+        """verifier отклоняет access-cookie на HTTP-границе."""
         client, auth_service, _app = auth_http
-        auth_service.get_current_user.side_effect = DomainErrors.Token.EXPIRED()
+        auth_service.get_current_user.execute.side_effect = TokenExpiredError()
 
         response = await client.get(
             "/api/v1/auth/me",

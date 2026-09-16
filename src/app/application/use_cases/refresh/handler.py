@@ -1,43 +1,35 @@
-from __future__ import annotations
-
 from collections.abc import Callable
 from datetime import datetime, timedelta
 import json
 from typing import Protocol
 from uuid import UUID
 
+from app.application.dto.token_pair import TokenPair
 from app.application.exceptions.idempotency import (
     IdempotencyKeyConflictError,
     IdempotencyRequestInProgressError,
     RefreshReplayUnavailableError,
 )
-from app.application.ports.dto import AccessPrincipal
-from app.application.ports.dto.idempotency import (
-    StoredResult,
-)
+from app.application.idempotency.fingerprint import compute_request_hash
+from app.application.ports.dto.idempotency import StoredResult
 from app.application.ports.idempotency import (
     IdempotencyCoordinatorProtocol,
     ReplayResultProtectorProtocol,
 )
 from app.application.ports.repositories import (
     AuthSessionRepositoryProtocol,
-    RefreshTokenRepositoryProtocol,
     UserRepositoryProtocol,
 )
-from app.application.ports.security import (
-    AccessTokenIssuerProtocol,
-    OpaqueRefreshTokenCodecProtocol,
-)
+from app.application.ports.security import OpaqueRefreshTokenCodecProtocol
 from app.application.ports.uow import AsyncUOWProtocol
-from app.application.services.auth_service import TokenPair
-from app.application.services.idempotency_fingerprint import compute_request_hash
+from app.application.tokens import TokenPairIssuer
+from app.application.use_cases.refresh.command import RefreshCommand
 from app.application.value_objects.idempotency import (
     ExecutionOutcome,
     IdempotencyIdentity,
 )
 from app.domain.base import utc_now
-from app.domain.exceptions import DomainErrors, InvalidRefreshTokenError
-from app.domain.refresh_tokens import RefreshToken
+from app.domain.exceptions import InvalidRefreshTokenError
 
 PUBLIC_REFRESH_SUBJECT = "public-refresh"
 REFRESH_OPERATION = "auth.refresh"
@@ -49,10 +41,6 @@ class TransactionalRefreshOperationProtocol(Protocol):
     async def execute(
         self, raw_token: str, identity: IdempotencyIdentity, request_hash: bytes
     ) -> StoredResult: ...
-
-
-class RefreshUseCaseProtocol(Protocol):
-    async def execute(self, *, refresh_token: str, key_hash: bytes) -> TokenPair: ...
 
 
 def replay_aad(
@@ -76,66 +64,54 @@ def replay_aad(
     ).encode()
 
 
-class TransactionalRefreshOperation(TransactionalRefreshOperationProtocol):
-    """Refresh business effect. The caller owns the already-open SQL transaction."""
+class TransactionalRefreshOperation:
+    """Сохраняет переход агрегата и зашифрованный результат внутри открытой UoW."""
 
     def __init__(
         self,
         users: UserRepositoryProtocol,
-        tokens: RefreshTokenRepositoryProtocol,
         sessions: AuthSessionRepositoryProtocol,
-        issuer: AccessTokenIssuerProtocol,
+        issuer: TokenPairIssuer,
         codec: OpaqueRefreshTokenCodecProtocol,
         protector: ReplayResultProtectorProtocol,
-        session_idle_ttl: timedelta | None = None,
+        session_idle_ttl: timedelta,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
-        self._users, self._tokens, self._sessions = users, tokens, sessions
-        self._issuer, self._codec, self._protector = issuer, codec, protector
-        self._session_idle_ttl = (
-            session_idle_ttl if session_idle_ttl is not None else timedelta(days=30)
-        )
+        self._users = users
+        self._sessions = sessions
+        self._issuer = issuer
+        self._codec = codec
+        self._protector = protector
+        self._session_idle_ttl = session_idle_ttl
         self._clock = clock
 
     async def execute(
         self, raw_token: str, identity: IdempotencyIdentity, request_hash: bytes
     ) -> StoredResult:
-        token = await self._tokens.get_by_hash_for_update(self._codec.digest(raw_token))
-        if token is None:
-            raise DomainErrors.Token.INVALID_REFRESH()
-        session = await self._sessions.get_for_update(token.session_id)
+        session = await self._sessions.get_by_refresh_hash_for_update(
+            self._codec.digest(raw_token)
+        )
         if session is None:
-            raise DomainErrors.Token.INVALID_REFRESH()
-        now = self._clock()
-        if token.is_used:
-            session.revoke(now)
-            await self._sessions.update(session)
-            return StoredResult(
-                result_type=REJECTED_RESULT, result_payload={"code": "invalid_refresh"}
-            )
-        if not session.is_active(now):
-            raise DomainErrors.Session.INACTIVE()
+            raise InvalidRefreshTokenError()
         user = await self._users.get(session.user_id)
-        if user is None or not user.can_authenticate:
-            session.revoke(now)
-            await self._sessions.update(session)
+        now = self._clock()
+        if not session.accepts_refresh(
+            now=now, user_can_authenticate=user is not None and user.can_authenticate
+        ):
+            await self._sessions.save(session)
+            # Отказ является результатом: исключение откатило бы отзыв family.
             return StoredResult(
                 result_type=REJECTED_RESULT, result_payload={"code": "invalid_refresh"}
             )
-        access_token = self._issuer.issue(
-            AccessPrincipal(user_id=user.id, role=user.role), now=now
+        if user is None:
+            raise InvalidRefreshTokenError()
+        issued = self._issuer.issue(user, now)
+        replacement = session.rotate(
+            now=now, idle_ttl=self._session_idle_ttl, token_hash=issued.refresh_digest
         )
-        issued_refresh = self._codec.issue()
-        token.consume(now)
-        await self._tokens.update(token)
-        session.extend_idle(now, self._session_idle_ttl)
-        await self._sessions.update(session)
-        replacement = await self._tokens.create(
-            RefreshToken(session_id=session.id, token_hash=issued_refresh.digest)
-        )
-        pair = TokenPair(access_token=access_token, refresh_token=issued_refresh.value)
+        await self._sessions.save(session)
         envelope = self._protector.protect(
-            pair.model_dump(mode="json"),
+            issued.pair.model_dump(mode="json"),
             aad=replay_aad(identity, request_hash, SUCCESS_RESULT),
         )
         return StoredResult(
@@ -146,41 +122,44 @@ class TransactionalRefreshOperation(TransactionalRefreshOperationProtocol):
         )
 
 
-class RefreshUseCase(RefreshUseCaseProtocol):
+class RefreshHandler:
     def __init__(
         self,
         coordinator: IdempotencyCoordinatorProtocol,
         operation: TransactionalRefreshOperationProtocol,
-        tokens: RefreshTokenRepositoryProtocol,
         sessions: AuthSessionRepositoryProtocol,
         codec: OpaqueRefreshTokenCodecProtocol,
         protector: ReplayResultProtectorProtocol,
         uow: AsyncUOWProtocol,
         lease_seconds: int = 30,
+        clock: Callable[[], datetime] = utc_now,
     ) -> None:
-        self._coordinator, self._operation = coordinator, operation
-        self._tokens, self._sessions, self._codec = tokens, sessions, codec
-        self._protector, self._uow = protector, uow
+        self._coordinator = coordinator
+        self._operation = operation
+        self._sessions = sessions
+        self._codec = codec
+        self._protector = protector
+        self._uow = uow
         self._lease_seconds = lease_seconds
+        self._clock = clock
 
-    async def execute(self, *, refresh_token: str, key_hash: bytes) -> TokenPair:
+    async def execute(self, command: RefreshCommand) -> TokenPair:
         identity = IdempotencyIdentity(
             subject_id=PUBLIC_REFRESH_SUBJECT,
             operation=REFRESH_OPERATION,
-            key_hash=key_hash,
+            key_hash=command.key_hash,
         )
         request_hash = compute_request_hash(
-            {"refresh_token_digest": self._codec.digest(refresh_token).hex()}
+            {"refresh_token_digest": self._codec.digest(command.refresh_token).hex()}
         )
 
         async def effect() -> StoredResult:
-            return await self._operation.execute(refresh_token, identity, request_hash)
+            return await self._operation.execute(
+                command.refresh_token, identity, request_hash
+            )
 
         result = await self._coordinator.execute(
-            identity,
-            request_hash,
-            effect,
-            lease_seconds=self._lease_seconds,
+            identity, request_hash, effect, lease_seconds=self._lease_seconds
         )
         if result.outcome is ExecutionOutcome.CONFLICT:
             raise IdempotencyKeyConflictError()
@@ -190,7 +169,7 @@ class RefreshUseCase(RefreshUseCaseProtocol):
         if completed is None:
             raise RuntimeError("successful idempotency outcome has no result")
         if completed.result_type == REJECTED_RESULT:
-            raise DomainErrors.Token.INVALID_REFRESH()
+            raise InvalidRefreshTokenError()
         if (
             completed.result_type != SUCCESS_RESULT
             or completed.result_payload is None
@@ -198,12 +177,10 @@ class RefreshUseCase(RefreshUseCaseProtocol):
         ):
             raise RefreshReplayUnavailableError()
         try:
+            token_id = UUID(str(completed.resource_id))
             async with self._uow:
-                token = await self._tokens.get(UUID(str(completed.resource_id)))
-                if token is None or token.is_used:
-                    raise InvalidRefreshTokenError()
-                session = await self._sessions.get(token.session_id)
-                if session is None or not session.is_active(utc_now()):
+                session = await self._sessions.get_by_refresh_id(token_id)
+                if session is None or not session.can_replay(self._clock()):
                     raise InvalidRefreshTokenError()
             payload = self._protector.restore(
                 completed.result_payload,
@@ -215,7 +192,5 @@ class RefreshUseCase(RefreshUseCaseProtocol):
                 ),
             )
             return TokenPair.model_validate(payload)
-        except InvalidRefreshTokenError:
-            raise
-        except Exception as error:
-            raise RefreshReplayUnavailableError() from error
+        except ValueError:
+            raise RefreshReplayUnavailableError() from None

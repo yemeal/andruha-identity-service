@@ -7,8 +7,14 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 import jwt
 from pydantic import ValidationError
 
+from app.application.exceptions.security import (
+    InvalidTokenConfigurationError,
+    InvalidTokenDataError,
+    InvalidTokenSigningKeyError,
+    TokenExpiredError,
+    TokenMalformedError,
+)
 from app.application.ports.dto.security import AccessTokenClaims
-from app.domain.exceptions import DomainErrors
 from app.infrastructure.security.rsa_keys import MIN_RSA_KEY_SIZE_BITS
 
 
@@ -50,21 +56,21 @@ class PyJWTAccessTokenVerifier:
         normalized_audience = audience.strip()
 
         if not normalized_issuer or not normalized_audience:
-            raise DomainErrors.Token.INVALID_CONFIGURATION()
+            raise InvalidTokenConfigurationError()
         if effective_leeway < timedelta(0):
-            raise DomainErrors.Token.INVALID_CONFIGURATION()
+            raise InvalidTokenConfigurationError()
         if not public_keys:
-            raise DomainErrors.Token.INVALID_CONFIGURATION()
+            raise InvalidTokenConfigurationError()
 
         normalized_public_keys: dict[str, RSAPublicKey] = {}
         for key_id, public_key in public_keys.items():
             normalized_key_id = key_id.strip()
             if not normalized_key_id:
-                raise DomainErrors.Token.INVALID_CONFIGURATION()
+                raise InvalidTokenConfigurationError()
             if normalized_key_id in normalized_public_keys:
-                raise DomainErrors.Token.INVALID_CONFIGURATION()
+                raise InvalidTokenConfigurationError()
             if public_key.key_size < MIN_RSA_KEY_SIZE_BITS:
-                raise DomainErrors.Token.INVALID_SIGNING_KEY()
+                raise InvalidTokenSigningKeyError()
             normalized_public_keys[normalized_key_id] = public_key
 
         # MappingProxyType - read-only view
@@ -105,41 +111,41 @@ class PyJWTAccessTokenVerifier:
                 },
             )
         except jwt.ExpiredSignatureError as error:
-            raise DomainErrors.Token.EXPIRED() from error
+            raise TokenExpiredError() from error
         except (jwt.PyJWTError, TypeError, ValueError, OverflowError) as error:
-            raise DomainErrors.Token.MALFORMED() from error
+            raise TokenMalformedError() from error
 
         # До этой точки подпись и стандартные claims уже проверены. Здесь
         # остается привести payload к строгому внутреннему контракту.
         try:
             return AccessTokenClaims.model_validate(payload)
         except ValidationError as error:
-            raise DomainErrors.Token.INVALID_DATA() from error
+            raise InvalidTokenDataError() from error
 
     def _select_public_key(self, token: str) -> RSAPublicKey:
         if not token:
-            raise DomainErrors.Token.MALFORMED()
+            raise TokenMalformedError()
 
         try:
             # Read only kid before selecting a trusted local public key.
             header = jwt.get_unverified_header(token)
         except (jwt.PyJWTError, TypeError, ValueError) as error:
-            raise DomainErrors.Token.MALFORMED() from error
+            raise TokenMalformedError() from error
 
         # -> проверить alg=RS256
         if header.get("alg") != self.ALGORITHM:
-            raise DomainErrors.Token.MALFORMED()
+            raise TokenMalformedError()
         # -> проверить typ=at+jwt
         if header.get("typ") != self.TOKEN_TYPE:
-            raise DomainErrors.Token.MALFORMED()
+            raise TokenMalformedError()
 
         key_id = header.get("kid")
         if not isinstance(key_id, str):
-            raise DomainErrors.Token.MALFORMED()
+            raise TokenMalformedError()
 
         # Никаких чтений файлов или запросов по входному kid: неизвестный ключ
         # просто означает, что этот сервис токену не доверяет.
         public_key = self._public_keys.get(key_id)
         if public_key is None:
-            raise DomainErrors.Token.MALFORMED()
+            raise TokenMalformedError()
         return public_key

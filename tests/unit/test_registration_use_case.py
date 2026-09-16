@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.domain.exceptions import UserAlreadyExistsError
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -24,15 +25,25 @@ from app.application.ports.registration_recovery import (
     RegistrationScope,
     RegistrationScopeFactory,
 )
-from app.application.services.registration import (
-    RegistrationAdministrationService,
-    RegistrationCoordinator,
+from app.application.use_cases.register.handler import RegisterUserHandler
+from app.application.use_cases.register.command import RegisterUserCommand
+from app.application.use_cases.resume_registration.handler import (
+    ResumeRegistrationHandler,
 )
-from app.application.services.registration_reconciler import (
+from app.application.use_cases.redrive_registration.handler import (
+    RedriveRegistrationHandler,
+)
+from app.application.use_cases.redrive_registration.command import (
+    RedriveRegistrationCommand,
+)
+from app.application.exceptions.persistence import (
+    PersistenceUnavailableError,
+    TransactionConflictError,
+)
+from app.application.registration.reconciler import (
     RegistrationReconcilerService,
 )
-from app.domain.exceptions import UserAlreadyExistsError
-from app.domain.users import User
+from app.domain.aggregates.user import User
 
 
 class Store:
@@ -43,6 +54,7 @@ class Store:
         self.operations: dict[uuid.UUID, RegistrationOperation] = {}
         self.users: dict[uuid.UUID, User] = {}
         self.events: list[object] = []
+        self.write_failure: Exception | None = None
 
 
 class UOW:
@@ -50,6 +62,11 @@ class UOW:
         self.store = store
 
     async def __aenter__(self) -> UOW:
+        self.snapshot = (
+            dict(self.store.operations),
+            dict(self.store.users),
+            list(self.store.events),
+        )
         self.store.active_transactions += 1
         return self
 
@@ -64,6 +81,7 @@ class UOW:
             self.store.commits += 1
         else:
             self.store.rollbacks += 1
+            self.store.operations, self.store.users, self.store.events = self.snapshot
 
 
 class Users:
@@ -79,6 +97,8 @@ class Users:
         )
 
     async def create_if_absent(self, user: User) -> User | None:
+        if self.store.write_failure is not None:
+            raise self.store.write_failure
         if await self.get_by_email(user.email) is not None:
             return None
         self.store.users[user.id] = user
@@ -337,7 +357,8 @@ class Scenario:
     profile: Profile
     observer: Observer
     scope_factory: RegistrationScopeFactory
-    coordinator: RegistrationCoordinator
+    coordinator: RegisterUserHandler
+    resume: ResumeRegistrationHandler
 
 
 def make_scenario(*, max_attempts: int = 3) -> Scenario:
@@ -358,20 +379,25 @@ def make_scenario(*, max_attempts: int = 3) -> Scenario:
 
     profile = Profile(store)
     observer = Observer()
-    coordinator = RegistrationCoordinator(
+    resume = ResumeRegistrationHandler(
         scope_factory=scope_factory,
         profile_provisioner=profile,
-        password_hasher=Hasher(),
         retry_policy=RegistrationRetryPolicy(
             initial_seconds=1,
             max_seconds=10,
             jitter_ratio=0,
             max_attempts=max_attempts,
         ),
-        claim_lease_seconds=30,
         observer=observer,
         clock=lambda: now,
         jitter_source=lambda: 0,
+    )
+    coordinator = RegisterUserHandler(
+        scope_factory=scope_factory,
+        password_hasher=Hasher(),
+        resume=resume,
+        claim_lease_seconds=30,
+        clock=lambda: now,
     )
     return Scenario(
         now,
@@ -381,6 +407,7 @@ def make_scenario(*, max_attempts: int = 3) -> Scenario:
         observer,
         scope_factory,
         coordinator,
+        resume,
     )
 
 
@@ -392,9 +419,11 @@ async def test_success_creates_user_only_after_profile_outside_transaction() -> 
     scenario = make_scenario()
 
     result = await scenario.coordinator.execute(
-        email="new@example.com",
-        password="password",
-        key_hash=key_hash(),
+        RegisterUserCommand(
+            email="new@example.com",
+            password="password",
+            key_hash=key_hash(),
+        )
     )
 
     assert result.outcome is RegistrationOutcome.COMPLETED
@@ -412,9 +441,11 @@ async def test_retryable_profile_failure_is_durable_but_creates_no_user() -> Non
     scenario.profile.failure = ProfileProvisioningUnavailableError()
 
     result = await scenario.coordinator.execute(
-        email="new@example.com",
-        password="password",
-        key_hash=key_hash(),
+        RegisterUserCommand(
+            email="new@example.com",
+            password="password",
+            key_hash=key_hash(),
+        )
     )
 
     assert result.outcome is RegistrationOutcome.PENDING
@@ -434,9 +465,11 @@ async def test_permanent_profile_rejection_blocks_operation() -> None:
 
     with pytest.raises(ProfileProvisioningUnavailableError):
         await scenario.coordinator.execute(
-            email="new@example.com",
-            password="password",
-            key_hash=key_hash(),
+            RegisterUserCommand(
+                email="new@example.com",
+                password="password",
+                key_hash=key_hash(),
+            )
         )
 
     operation = next(iter(scenario.store.operations.values()))
@@ -448,15 +481,19 @@ async def test_permanent_profile_rejection_blocks_operation() -> None:
 async def test_completed_key_replays_without_second_profile_call() -> None:
     scenario = make_scenario()
     first = await scenario.coordinator.execute(
-        email="new@example.com",
-        password="password",
-        key_hash=key_hash(),
+        RegisterUserCommand(
+            email="new@example.com",
+            password="password",
+            key_hash=key_hash(),
+        )
     )
 
     replay = await scenario.coordinator.execute(
-        email="new@example.com",
-        password="password",
-        key_hash=key_hash(),
+        RegisterUserCommand(
+            email="new@example.com",
+            password="password",
+            key_hash=key_hash(),
+        )
     )
 
     assert replay == first
@@ -466,32 +503,40 @@ async def test_completed_key_replays_without_second_profile_call() -> None:
 async def test_same_key_with_different_password_conflicts() -> None:
     scenario = make_scenario()
     await scenario.coordinator.execute(
-        email="new@example.com",
-        password="password",
-        key_hash=key_hash(),
+        RegisterUserCommand(
+            email="new@example.com",
+            password="password",
+            key_hash=key_hash(),
+        )
     )
 
     with pytest.raises(IdempotencyKeyConflictError):
         await scenario.coordinator.execute(
-            email="new@example.com",
-            password="another-password",
-            key_hash=key_hash(),
+            RegisterUserCommand(
+                email="new@example.com",
+                password="another-password",
+                key_hash=key_hash(),
+            )
         )
 
 
 async def test_different_key_for_registered_email_conflicts() -> None:
     scenario = make_scenario()
     await scenario.coordinator.execute(
-        email="new@example.com",
-        password="password",
-        key_hash=key_hash("first-key"),
+        RegisterUserCommand(
+            email="new@example.com",
+            password="password",
+            key_hash=key_hash("first-key"),
+        )
     )
 
     with pytest.raises(UserAlreadyExistsError):
         await scenario.coordinator.execute(
-            email="new@example.com",
-            password="password",
-            key_hash=key_hash("second-key"),
+            RegisterUserCommand(
+                email="new@example.com",
+                password="password",
+                key_hash=key_hash("second-key"),
+            )
         )
 
 
@@ -499,9 +544,11 @@ async def test_reconciler_completes_due_pending_operation() -> None:
     scenario = make_scenario()
     scenario.profile.failure = ProfileProvisioningUnavailableError()
     pending = await scenario.coordinator.execute(
-        email="new@example.com",
-        password="password",
-        key_hash=key_hash(),
+        RegisterUserCommand(
+            email="new@example.com",
+            password="password",
+            key_hash=key_hash(),
+        )
     )
     operation = scenario.store.operations[pending.operation_id]
     scenario.store.operations[operation.id] = operation.model_copy(
@@ -511,7 +558,7 @@ async def test_reconciler_completes_due_pending_operation() -> None:
 
     reconciler = RegistrationReconcilerService(
         scope_factory=scenario.scope_factory,
-        attempt=scenario.coordinator,
+        attempt=scenario.resume,
         observer=scenario.observer,
         claim_lease_seconds=30,
         clock=lambda: scenario.now,
@@ -530,20 +577,94 @@ async def test_blocked_operation_can_be_explicitly_redriven() -> None:
     scenario.profile.failure = ProfileProvisioningRejectedError()
     with pytest.raises(ProfileProvisioningUnavailableError):
         await scenario.coordinator.execute(
-            email="new@example.com",
-            password="password",
-            key_hash=key_hash(),
+            RegisterUserCommand(
+                email="new@example.com",
+                password="password",
+                key_hash=key_hash(),
+            )
         )
     operation = next(iter(scenario.store.operations.values()))
 
-    administration = RegistrationAdministrationService(
+    administration = RedriveRegistrationHandler(
         scenario.scope_factory,
         clock=lambda: scenario.now,
     )
-    assert await administration.redrive(operation.id)
+    assert await administration.execute(
+        RedriveRegistrationCommand(operation_id=operation.id)
+    )
 
     redriven = scenario.store.operations[operation.id]
     assert redriven.status is RegistrationStatus.PENDING
     assert redriven.attempts == 0
     assert redriven.terminal_at is None
     assert redriven.redrive_count == 1
+
+
+async def test_direct_command_rejects_short_password_before_effects() -> None:
+    from app.domain.exceptions import InvalidPasswordError
+
+    scenario = make_scenario()
+    with pytest.raises(InvalidPasswordError):
+        await scenario.coordinator.execute(
+            RegisterUserCommand(
+                email="new@example.com", password="x", key_hash=key_hash()
+            )
+        )
+    assert scenario.store.operations == {}
+    assert scenario.profile.calls == []
+
+
+async def test_case_variant_retry_has_same_normalized_identity() -> None:
+    scenario = make_scenario()
+    first = await scenario.coordinator.execute(
+        RegisterUserCommand(
+            email="NEW@EXAMPLE.COM", password="password", key_hash=key_hash()
+        )
+    )
+    replay = await scenario.coordinator.execute(
+        RegisterUserCommand(
+            email="new@example.com", password="password", key_hash=key_hash()
+        )
+    )
+    assert replay == first
+    assert len(scenario.profile.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "failure", [PersistenceUnavailableError(), TransactionConflictError()]
+)
+async def test_transient_finalization_failure_schedules_recovery(failure) -> None:
+    scenario = make_scenario()
+
+    scenario.store.write_failure = failure
+    result = await scenario.coordinator.execute(
+        RegisterUserCommand(
+            email="new@example.com", password="password", key_hash=key_hash()
+        )
+    )
+    assert result.outcome is RegistrationOutcome.PENDING
+    assert scenario.observer.retries == 1
+    assert scenario.store.users == {}
+
+
+@pytest.mark.parametrize("phase", ["profile", "finalization"])
+async def test_programming_failure_is_blocked_and_not_reported_as_pending(
+    phase,
+) -> None:
+    scenario = make_scenario()
+    failure = TypeError("deterministic defect")
+
+    if phase == "profile":
+        scenario.profile.failure = failure
+    else:
+        scenario.store.write_failure = failure
+    with pytest.raises(TypeError) as captured:
+        await scenario.coordinator.execute(
+            RegisterUserCommand(
+                email="new@example.com", password="password", key_hash=key_hash()
+            )
+        )
+    assert captured.value is failure
+    operation = next(iter(scenario.store.operations.values()))
+    assert operation.status is RegistrationStatus.BLOCKED
+    assert scenario.observer.retries == 0

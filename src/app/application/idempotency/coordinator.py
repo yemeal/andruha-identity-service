@@ -15,7 +15,6 @@ from app.application.ports.idempotency import (
     DurableExecutionProtocol,
     HotIdempotencyStoreProtocol,
     IdempotencyObserverProtocol,
-    IdempotencyPreparation,
     IdempotentOperation,
     OwnerTokenFactory,
 )
@@ -68,7 +67,6 @@ class IdempotencyCoordinator:
         operation: IdempotentOperation,
         *,
         lease_seconds: int,
-        prepare: IdempotencyPreparation | None = None,
     ) -> ExecutionResult:
         if lease_seconds <= 0:
             raise ValueError("lease_seconds must be positive")
@@ -78,11 +76,10 @@ class IdempotencyCoordinator:
         if hot_store is None:
             self._observer.observe_hot_degraded("disabled")
             return self._observe(
-                await self._execute_durable(
+                await self._durable_execution.execute_once(
                     identity,
                     request_hash,
                     operation,
-                    prepare=prepare,
                 )
             )
 
@@ -97,11 +94,10 @@ class IdempotencyCoordinator:
         except IdempotencyStorageUnavailableError:
             self._observer.observe_hot_degraded("begin")
             return self._observe(
-                await self._execute_durable(
+                await self._durable_execution.execute_once(
                     identity,
                     request_hash,
                     operation,
-                    prepare=prepare,
                 )
             )
 
@@ -136,24 +132,9 @@ class IdempotencyCoordinator:
             )
         )
         try:
-            existing = (
-                await self._durable_execution.find_existing(
-                    identity,
-                    request_hash,
-                )
-                if prepare is not None
-                else None
+            result = await self._durable_execution.execute_once(
+                identity, request_hash, operation
             )
-            if existing is not None:
-                result = existing
-            else:
-                if prepare is not None:
-                    await prepare()
-                result = await self._durable_execution.execute_once(
-                    identity,
-                    request_hash,
-                    operation,
-                )
         except BaseException:
             await self._stop_heartbeat(heartbeat, stop_heartbeat)
             if not lost_lease.is_set():
@@ -189,28 +170,6 @@ class IdempotencyCoordinator:
     def _observe(self, result: ExecutionResult) -> ExecutionResult:
         self._observer.observe_outcome(result.outcome.value)
         return result
-
-    async def _execute_durable(
-        self,
-        identity: IdempotencyIdentity,
-        request_hash: bytes,
-        operation: IdempotentOperation,
-        *,
-        prepare: IdempotencyPreparation | None,
-    ) -> ExecutionResult:
-        if prepare is not None:
-            existing = await self._durable_execution.find_existing(
-                identity,
-                request_hash,
-            )
-            if existing is not None:
-                return existing
-            await prepare()
-        return await self._durable_execution.execute_once(
-            identity,
-            request_hash,
-            operation,
-        )
 
     async def _heartbeat(
         self,

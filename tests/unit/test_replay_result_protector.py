@@ -1,3 +1,4 @@
+from app.application.exceptions.idempotency import RefreshReplayUnavailableError
 import json
 
 import pytest
@@ -35,7 +36,7 @@ def test_replay_envelope_uses_fresh_nonce_and_rejects_other_identity() -> None:
 
     assert first["nonce"] != second["nonce"]
     assert first["ciphertext"] != second["ciphertext"]
-    with pytest.raises(ValueError, match="unavailable"):
+    with pytest.raises(RefreshReplayUnavailableError):
         protector.restore(first, aad=b"identity-two")
 
 

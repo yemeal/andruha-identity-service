@@ -2,8 +2,9 @@ from types import TracebackType
 from typing import Protocol
 
 
-# Application services own transaction boundaries through this adapter-neutral port.
 class AsyncUOWProtocol(Protocol):
+    """Commit on success, roll back on failure; storage failures raise PersistenceError."""
+
     async def __aenter__(self) -> AsyncUOWProtocol: ...
 
     async def __aexit__(
