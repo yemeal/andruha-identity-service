@@ -1,21 +1,20 @@
 # syntax=docker/dockerfile:1
 ARG PYTHON_VERSION=3.14
-ARG POETRY_VERSION=2.4.1
+ARG UV_VERSION=0.12.17
+
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin
 
 FROM python:${PYTHON_VERSION}-slim-bookworm AS builder
 
-ARG POETRY_VERSION
-ENV POETRY_VIRTUALENVS_IN_PROJECT=1 \
-    POETRY_VIRTUALENVS_CREATE=1 \
-    POETRY_NO_INTERACTION=1 \
-    POETRY_CACHE_DIR=/tmp/poetry-cache
+COPY --from=uv-bin /uv /uvx /bin/
 
-RUN pip install --no-cache-dir "poetry==${POETRY_VERSION}"
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
 
 WORKDIR /app
-COPY pyproject.toml poetry.lock ./
-RUN --mount=type=cache,target=/tmp/poetry-cache \
-    poetry install --only main --no-root --no-ansi
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --no-dev --frozen
 
 FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
 
