@@ -178,8 +178,8 @@ Alembic manages all schema migrations for the durable PostgreSQL store:
 * `registration_operations`: Durable registration progress, leases, and recovery state.
 
 ```powershell
-poetry run alembic upgrade head
-poetry run alembic downgrade base
+uv run alembic upgrade head
+uv run alembic downgrade base
 ```
 
 ---
@@ -190,13 +190,12 @@ Unit tests cover domain transitions, commands, error boundaries, and recovery.
 Integration tests use disposable PostgreSQL and Valkey containers with an HTTP Profile test peer:
 
 ```powershell
-poetry sync --with dev --no-root
-poetry run ruff check .
-poetry run ruff format --check .
-poetry run ty check --error-on-warning
-poetry run pytest tests/unit
-poetry run pytest tests/integration     # PostgreSQL + Valkey + Profile peer
-poetry run pip-audit
+uv sync
+uv run prek install
+uv run prek run --all-files
+uv run pytest tests/unit
+uv run pytest tests/integration     # PostgreSQL + Valkey + Profile peer
+uv run pip-audit
 docker build --target runtime --tag andruha/identity-service:local .
 ```
 
