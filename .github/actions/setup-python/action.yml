@@ -1,0 +1,28 @@
+name: Set up Python tooling
+description: Install Python, uv and frozen service dependencies.
+inputs:
+  python-version:
+    description: Python version
+    required: true
+  uv-version:
+    description: uv version
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v7
+      with:
+        python-version: '${{ inputs.python-version }}'
+        check-latest: false
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v10.3.3
+      with:
+        enable-cache: true
+        version: '${{ inputs.uv-version }}'
+    - name: Verify dependency metadata
+      run: uv lock --check
+      shell: bash
+    - name: Install locked dependencies
+      run: uv sync --frozen
+      shell: bash
