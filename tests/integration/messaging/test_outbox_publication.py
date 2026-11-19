@@ -61,7 +61,7 @@ class RecordingBrokerPublisher(BrokerPublisherProtocol):
 
 def build_scope_factory(
     sessionmaker: async_sessionmaker[AsyncSession],
-    topic: str = "identity.user-registered.v1",
+    topic: str = "identity.events.v1",
     producer: str = "andruha-identity-service",
 ) -> OutboxScopeFactory:
     from contextlib import asynccontextmanager
@@ -103,7 +103,7 @@ async def test_registration_atomically_persists_user_and_outbox_message(
     assert outbox_orm.status == OutboxStatus.PENDING
     assert outbox_orm.kind == OutboxKind.EVENT
     assert outbox_orm.type == "identity.user_registered.v1"
-    assert outbox_orm.topic == "identity.user-registered.v1"
+    assert outbox_orm.topic == "identity.events.v1"
     assert outbox_orm.attempts == 0
     assert outbox_orm.claim_token is None
     assert outbox_orm.claim_expires_at is None
@@ -291,7 +291,7 @@ async def test_relay_recovers_expired_claimed_lease(
     zombie_message = OutboxMessageORM(
         id=msg_id,
         kind=OutboxKind.EVENT,
-        topic="identity.user-registered.v1",
+        topic="identity.events.v1",
         key="user-zombie",
         type="identity.user_registered.v1",
         payload={"userId": "user-zombie"},
