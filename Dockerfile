@@ -25,7 +25,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH="/app/src"
 
-RUN groupadd --gid ${APP_GID} appuser \
+# Dependencies are installed by uv in the builder; the runtime does not need pip.
+RUN python -m pip uninstall --yes pip \
+    && groupadd --gid ${APP_GID} appuser \
     && useradd --uid ${APP_UID} --gid ${APP_GID} \
         --no-create-home --shell /bin/false appuser
 

@@ -4,7 +4,8 @@ on:
   workflow_call:
   pull_request:
   push:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -16,12 +17,93 @@ concurrency:
 
 env:
   IMAGE_NAME: local/${{ github.event.repository.name }}:ci
+  DOCKER_BUILD_TARGET: runtime
+  PYTHON_VERSION: "3.14"
+  UV_VERSION: latest
+  COVERAGE_MIN: "80"
+  SEMGREP_IMAGE: semgrep/semgrep:latest
+  SAST_BLOCKING_SEVERITY: ERROR
+  TRIVY_VERSION: latest
+  IMAGE_SCAN_SEVERITY: HIGH,CRITICAL
+  IMAGE_SCAN_TIMEOUT: 5m
+  REPORT_RETENTION_DAYS: "7"
+  BUILD_ARTIFACT_RETENTION_DAYS: "1"
 
 jobs:
-  quality-and-tests:
-    name: Quality and tests
+  ruff-check:
+    name: Ruff Check
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Python tooling
+        uses: ./.github/actions/setup-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          uv-version: ${{ env.UV_VERSION }}
+      - name: Check Python code
+        run: uv run prek run ruff-check --all-files
+
+  ruff-format:
+    name: Ruff Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Python tooling
+        uses: ./.github/actions/setup-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          uv-version: ${{ env.UV_VERSION }}
+      - name: Check Python formatting
+        run: uv run prek run ruff-format --all-files
+
+  type-check:
+    name: Type Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Python tooling
+        uses: ./.github/actions/setup-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          uv-version: ${{ env.UV_VERSION }}
+      - name: Check production types
+        run: uv run prek run ty-check --all-files
+
+  repository-checks:
+    name: Repository checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Python tooling
+        uses: ./.github/actions/setup-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          uv-version: ${{ env.UV_VERSION }}
+      - name: Run remaining quality hooks
+        run: >-
+          uv run prek run --all-files
+          --skip ruff-check --skip ruff-format --skip ty-check
+
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       DATABASE_HOST: 127.0.0.1
       DATABASE_PORT: "5432"
@@ -30,6 +112,44 @@ jobs:
       DATABASE_NAME: andruha_identity
       IDENTITY_TEST_DATABASE_URL: postgresql+asyncpg://andruha_identity:identity-local-only@127.0.0.1:5432/andruha_identity
       IDENTITY_TEST_VALKEY_URL: redis://127.0.0.1:6379/15
+      COVERAGE_FILE: .coverage.unit
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Python tooling
+        uses: ./.github/actions/setup-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          uv-version: ${{ env.UV_VERSION }}
+      - name: Reset coverage data
+        run: uv run coverage erase
+      - name: Unit tests
+        run: uv run pytest tests/unit --cov=app --cov-branch --cov-report= --cov-fail-under=0
+      - name: Upload coverage data
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-unit
+          path: ${{ env.COVERAGE_FILE }}
+          if-no-files-found: error
+          retention-days: ${{ env.BUILD_ARTIFACT_RETENTION_DAYS }}
+          include-hidden-files: true
+          overwrite: true
+
+  integration-tests:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_HOST: 127.0.0.1
+      DATABASE_PORT: "5432"
+      DATABASE_USER: andruha_identity
+      DATABASE_PASSWORD: identity-local-only
+      DATABASE_NAME: andruha_identity
+      IDENTITY_TEST_DATABASE_URL: postgresql+asyncpg://andruha_identity:identity-local-only@127.0.0.1:5432/andruha_identity
+      IDENTITY_TEST_VALKEY_URL: redis://127.0.0.1:6379/15
+      COVERAGE_FILE: .coverage.integration
     services:
       postgres:
         image: postgres:17.10-bookworm
@@ -39,85 +159,99 @@ jobs:
           POSTGRES_DB: andruha_identity
         ports:
           - 5432:5432
-        options: >-
-          --health-cmd "pg_isready --username andruha_identity --dbname andruha_identity"
-          --health-interval 2s
-          --health-timeout 3s
-          --health-retries 30
+        options: --health-cmd "pg_isready --username andruha_identity --dbname andruha_identity" --health-interval 2s --health-timeout
+          3s --health-retries 30
       valkey:
         image: valkey/valkey:8.1.9-alpine3.24
         ports:
           - 6379:6379
-        options: >-
-          --health-cmd "valkey-cli ping"
-          --health-interval 2s
-          --health-timeout 3s
-          --health-retries 30
-
+        options: --health-cmd "valkey-cli ping" --health-interval 2s --health-timeout 3s --health-retries 30
     steps:
       - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Python 3.14
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/checkout@v7
         with:
-          python-version: "3.14"
-          check-latest: false
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+          persist-credentials: false
+      - name: Set up Python tooling
+        uses: ./.github/actions/setup-python
         with:
-          enable-cache: true
-
-      - name: Verify dependency metadata
-        run: uv lock --check
-
-      - name: Install locked dependencies
-        run: uv sync --frozen
-
+          python-version: ${{ env.PYTHON_VERSION }}
+          uv-version: ${{ env.UV_VERSION }}
       - name: Upgrade empty Identity database
         run: uv run alembic upgrade head
-
-      - name: Run prek quality hooks
-        run: uv run prek run --all-files
-
       - name: Reset coverage data
         run: uv run coverage erase
-
-      - name: Unit tests
-        run: >-
-          uv run pytest tests/unit
-          --cov=app
-          --cov-branch
-          --cov-report=
-          --cov-fail-under=0
-
       - name: Integration tests
-        run: >-
-          uv run pytest tests/integration
-          --cov=app
-          --cov-branch
-          --cov-append
-          --cov-report=
-          --cov-fail-under=0
+        run: uv run pytest tests/integration --cov=app --cov-branch --cov-append --cov-report= --cov-fail-under=0
+      - name: Upload coverage data
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-integration
+          path: ${{ env.COVERAGE_FILE }}
+          if-no-files-found: error
+          retention-days: ${{ env.BUILD_ARTIFACT_RETENTION_DAYS }}
+          include-hidden-files: true
+          overwrite: true
 
+  quality-and-tests:
+    name: Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs:
+      - unit-tests
+      - integration-tests
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Python tooling
+        uses: ./.github/actions/setup-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          uv-version: ${{ env.UV_VERSION }}
+      - name: Download unit coverage
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage-unit
+          path: ${{ runner.temp }}/coverage
+      - name: Download integration coverage
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage-integration
+          path: ${{ runner.temp }}/coverage
+      - name: Combine unit and integration coverage
+        run: uv run coverage combine "${RUNNER_TEMP}/coverage"
       - name: Enforce branch coverage
         run: |
-          uv run coverage report --show-missing --fail-under=80
+          uv run coverage report --show-missing --fail-under="${COVERAGE_MIN}"
           uv run coverage xml
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: coverage.xml
+          if-no-files-found: error
+          retention-days: ${{ env.REPORT_RETENTION_DAYS }}
+          overwrite: true
 
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Python tooling
+        uses: ./.github/actions/setup-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          uv-version: ${{ env.UV_VERSION }}
       - name: Export runtime dependency graph
-        run: >-
-          uv export
-          --no-dev
-          --format requirements-txt
-          --output-file "${RUNNER_TEMP}/requirements-runtime.txt"
-
+        run: uv export --no-dev --format requirements-txt --output-file "${RUNNER_TEMP}/requirements-runtime.txt"
       - name: Audit runtime dependencies
-        run: >-
-          uv run pip-audit
-          --requirement "${RUNNER_TEMP}/requirements-runtime.txt"
-          --progress-spinner off
+        run: uv run pip-audit --requirement "${RUNNER_TEMP}/requirements-runtime.txt" --progress-spinner off
 
   secret-scan:
     name: Secret scan
@@ -125,46 +259,224 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-
     steps:
       - name: Checkout full history
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
+          persist-credentials: false
       - name: Scan repository history
-        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_ENABLE_COMMENTS: "false"
-          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+          GITLEAKS_ENABLE_COMMENTS: 'false'
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
 
-  docker:
-    name: Docker build and smoke test
-    needs: [quality-and-tests, secret-scan]
+  # Required by the main branch ruleset.
+  quality-summary:
+    name: Quality and tests
+    needs: [ruff-check, ruff-format, type-check, repository-checks, quality-and-tests, dependency-audit]
+    if: ${{ always() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require all prerequisite jobs to pass
+        shell: bash
+        env:
+          CI_RESULTS: ${{ toJSON(needs) }}
+        run: jq --exit-status 'length > 0 and all(.[]; .result == "success")' <<< "${CI_RESULTS}"
 
+  build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs:
+      - ruff-check
+      - ruff-format
+      - type-check
+      - repository-checks
+      - quality-and-tests
+      - dependency-audit
+      - secret-scan
     steps:
       - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-
-      - name: Build runnable image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/setup-buildx-action@v4
+      - name: Build runtime image
+        uses: docker/build-push-action@v7
         with:
           context: .
-          target: runtime
+          target: ${{ env.DOCKER_BUILD_TARGET }}
           push: false
           load: true
           tags: ${{ env.IMAGE_NAME }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Export built image
+        run: docker image save --output "${RUNNER_TEMP}/runtime-image.tar" "${IMAGE_NAME}"
+      - name: Upload built image
+        uses: actions/upload-artifact@v7
+        with:
+          name: runtime-image
+          path: ${{ runner.temp }}/runtime-image.tar
+          if-no-files-found: error
+          retention-days: ${{ env.BUILD_ARTIFACT_RETENTION_DAYS }}
+          overwrite: true
 
+  sast:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Checkout current security rules
+        uses: actions/checkout@v7
+        with:
+          repository: semgrep/semgrep-rules
+          path: .semgrep-rules
+          sparse-checkout: ${{ env.SEMGREP_RULES }}
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+      - name: Scan source code
+        run: |
+          set -Eeuo pipefail
+          report_dir="${RUNNER_TEMP}/semgrep"
+          mkdir -p "${report_dir}"
+
+          rule_args=()
+          while IFS= read -r rule; do
+            rule_args+=(--config "/rules/${rule}")
+          done <<< "${SEMGREP_RULES}"
+
+          mapfile -t targets <<< "${SAST_TARGETS}"
+          docker run --rm --pull always --network none \
+            --volume "${GITHUB_WORKSPACE}:/src:ro" \
+            --volume "${GITHUB_WORKSPACE}/.semgrep-rules:/rules:ro" \
+            --volume "${report_dir}:/reports" \
+            --workdir /src \
+            "${SEMGREP_IMAGE}" semgrep scan "${rule_args[@]}" \
+            --metrics off --disable-version-check --no-git-ignore \
+            --exclude tests --exclude scripts --exclude .venv \
+            --json --output /reports/semgrep.json --sarif-output /reports/semgrep.sarif \
+            "${targets[@]}"
+        id: sast-scan
+        shell: bash
+      - name: Enforce SAST policy
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          report="${RUNNER_TEMP}/semgrep/semgrep.json"
+
+          if ! jq -e 'all(.errors[];
+            .level == "warn" and
+            ((.type | if type == "array" then .[0] else . end) == "PartialParsing")
+          )' "${report}" > /dev/null; then
+            echo "::error::Semgrep reported analysis errors. See the semgrep-sast artifact."
+            exit 1
+          fi
+
+          partial_count="$(jq '.errors | length' "${report}")"
+          if (( partial_count > 0 )); then
+            echo "::warning::Semgrep reported ${partial_count} partial parse warnings. See the semgrep-sast artifact."
+          fi
+
+          if ! jq -e --arg severity "${SAST_BLOCKING_SEVERITY}" \
+            'all(.results[]; .extra.severity != $severity)' "${report}" > /dev/null; then
+            echo "::error::Semgrep found issues at ${SAST_BLOCKING_SEVERITY}. See the semgrep-sast artifact."
+            exit 1
+          fi
+      - name: Upload SAST report
+        uses: actions/upload-artifact@v7
+        if: ${{ always() && steps.sast-scan.outcome != 'skipped' }}
+        with:
+          name: semgrep-sast
+          path: ${{ runner.temp }}/semgrep/semgrep.sarif
+          if-no-files-found: error
+          retention-days: ${{ env.REPORT_RETENTION_DAYS }}
+          overwrite: true
+    env:
+      SEMGREP_RULES: |-
+        python/lang/security
+        python/fastapi/security
+        python/jwt/security
+        python/cryptography/security
+        python/requests/security
+        python/sqlalchemy/security/sqlalchemy-sql-injection.yaml
+      SAST_TARGETS: |-
+        src/app
+
+  image-scan:
+    name: SCA (Trivy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - build
+    steps:
+      - name: Download built image
+        uses: actions/download-artifact@v8
+        with:
+          name: runtime-image
+          path: ${{ runner.temp }}/image
+      - name: Load built image
+        run: docker image load --input "${RUNNER_TEMP}/image/runtime-image.tar"
+      - name: Set up Trivy
+        uses: aquasecurity/setup-trivy@v0.3.1
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+      - name: Scan runtime image and enforce fixable CVE policy
+        id: image-scan
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          raw_report="${RUNNER_TEMP}/trivy-raw.json"
+          trivy image --image-src docker --scanners vuln,secret \
+            --pkg-types os,library --format json --timeout "${IMAGE_SCAN_TIMEOUT}" \
+            --output "${raw_report}" "${IMAGE_NAME}"
+          jq 'del(.Metadata.ImageConfig) | (.Results[]?.Secrets[]?) |=
+              {RuleID, Category, Severity, Title, StartLine, EndLine}' \
+            "${raw_report}" > "${RUNNER_TEMP}/trivy-image.json"
+
+          trivy image --image-src docker --scanners vuln \
+            --pkg-types os,library --severity "${IMAGE_SCAN_SEVERITY}" \
+            --ignore-unfixed --exit-code 1 --skip-db-update --timeout "${IMAGE_SCAN_TIMEOUT}" \
+            "${IMAGE_NAME}"
+      - name: Upload image security report
+        if: ${{ always() && steps.image-scan.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: trivy-image-${{ github.event.repository.name }}
+          path: ${{ runner.temp }}/trivy-image.json
+          retention-days: ${{ env.REPORT_RETENTION_DAYS }}
+          if-no-files-found: error
+          overwrite: true
+
+  docker:
+    name: Smoke tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs:
+      - build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Download built image
+        uses: actions/download-artifact@v8
+        with:
+          name: runtime-image
+          path: ${{ runner.temp }}/image
+      - name: Load built image
+        run: docker image load --input "${RUNNER_TEMP}/image/runtime-image.tar"
       - name: Smoke-test operational endpoints
         shell: bash
         run: |
@@ -260,3 +572,18 @@ jobs:
           grep --quiet '"status":"ready"' "${ready_body}"
           grep --quiet '"postgres":"ok"' "${ready_body}"
           grep --quiet '"valkey":"degraded"' "${ready_body}"
+
+  # Required by the main branch ruleset.
+  docker-summary:
+    name: Docker build and smoke test
+    needs: [build, sast, image-scan, docker]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require all prerequisite jobs to pass
+        shell: bash
+        env:
+          CI_RESULTS: ${{ toJSON(needs) }}
+        run: jq --exit-status 'length > 0 and all(.[]; .result == "success")' <<< "${CI_RESULTS}"
