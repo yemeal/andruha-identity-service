@@ -389,14 +389,14 @@ jobs:
           retention-days: ${{ env.REPORT_RETENTION_DAYS }}
           overwrite: true
     env:
-      SEMGREP_RULES: |
+      SEMGREP_RULES: |-
         python/lang/security
         python/fastapi/security
         python/jwt/security
         python/cryptography/security
         python/requests/security
         python/sqlalchemy/security/sqlalchemy-sql-injection.yaml
-      SAST_TARGETS: |
+      SAST_TARGETS: |-
         src/app
 
   image-scan:
