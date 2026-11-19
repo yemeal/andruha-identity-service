@@ -27,6 +27,7 @@ from app.entrypoints.http.routers.exception_handlers import (
     register_exception_handlers,
 )
 from app.entrypoints.http.routers.health import router as health_router
+from app.entrypoints.http.routers.internal import router as internal_router
 from app.infrastructure.di import create_container
 
 logger = structlog.get_logger()
@@ -61,6 +62,7 @@ def create_app() -> FastAPI:
         internal_error_response_factory=create_internal_error_response,
     )
     app.include_router(health_router)
+    app.include_router(internal_router)
     app.include_router(
         create_api_router(
             include_test_token_endpoint=settings.test_token_endpoint_enabled

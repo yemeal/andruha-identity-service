@@ -7,6 +7,10 @@ from app.domain.value_objects.email import NormalizedEmail
 
 
 class UserRepositoryProtocol(AsyncRepositoryProtocol[User, UUID], Protocol):
+    async def get_many(self, user_ids: tuple[UUID, ...]) -> tuple[User, ...]:
+        """Read completed Identity accounts in one bounded batch."""
+        ...
+
     async def create_if_absent(self, user: User) -> User | None:
         """Create a user unless the email is already registered."""
         ...

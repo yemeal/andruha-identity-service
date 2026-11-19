@@ -1,13 +1,14 @@
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 
 from app.application.exceptions.security import InvalidTokenConfigurationError
 from app.core.settings.base import BaseContextSettings
 
 
 class SecuritySettings(BaseContextSettings):
+    IDENTITY_INTERNAL_API_TOKEN: SecretStr | None = Field(default=None, repr=False)
     AUTH_COOKIE_SECURE: bool = True
     AUTH_COOKIE_SAMESITE: Literal["lax", "strict", "none"] = "lax"
     AUTH_TEST_TOKEN_ENDPOINT_ENABLED: bool = False
