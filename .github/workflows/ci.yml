@@ -272,6 +272,21 @@ jobs:
           GITLEAKS_ENABLE_COMMENTS: 'false'
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
 
+  # Required by the main branch ruleset.
+  quality-summary:
+    name: Quality and tests
+    needs: [ruff-check, ruff-format, type-check, repository-checks, quality-and-tests, dependency-audit]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require all prerequisite jobs to pass
+        shell: bash
+        env:
+          CI_RESULTS: ${{ toJSON(needs) }}
+        run: jq --exit-status 'length > 0 and all(.[]; .result == "success")' <<< "${CI_RESULTS}"
+
   build:
     name: Docker Build
     runs-on: ubuntu-latest
@@ -557,3 +572,18 @@ jobs:
           grep --quiet '"status":"ready"' "${ready_body}"
           grep --quiet '"postgres":"ok"' "${ready_body}"
           grep --quiet '"valkey":"degraded"' "${ready_body}"
+
+  # Required by the main branch ruleset.
+  docker-summary:
+    name: Docker build and smoke test
+    needs: [build, sast, image-scan, docker]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require all prerequisite jobs to pass
+        shell: bash
+        env:
+          CI_RESULTS: ${{ toJSON(needs) }}
+        run: jq --exit-status 'length > 0 and all(.[]; .result == "success")' <<< "${CI_RESULTS}"
