@@ -20,6 +20,14 @@ class UserRepository(
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session, User, UserORM)
 
+    async def get_many(self, user_ids: tuple[UUID, ...]) -> tuple[User, ...]:
+        if not user_ids:
+            return ()
+        result = await self._session.scalars(
+            select(UserORM).where(UserORM.id.in_(user_ids))
+        )
+        return tuple(self._to_domain(row) for row in result)
+
     async def create_if_absent(self, user: User) -> User | None:
         stmt = (
             pg_insert(UserORM)

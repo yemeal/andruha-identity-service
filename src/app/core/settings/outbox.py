@@ -1,3 +1,6 @@
+from pathlib import Path
+from tempfile import gettempdir
+
 from pydantic import Field, field_validator
 
 from app.core.settings.base import BaseContextSettings
@@ -13,6 +16,13 @@ class OutboxSettings(BaseContextSettings):
     OUTBOX_RETRY_JITTER_RATIO: float = Field(default=0.2, ge=0.0, le=1.0)
     OUTBOX_RETRY_MAX_ATTEMPTS: int = Field(default=10, gt=0)
     OUTBOX_SHUTDOWN_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0.0)
+    OUTBOX_BOOTSTRAP_MAX_ATTEMPTS: int = Field(default=5, gt=0)
+    OUTBOX_BOOTSTRAP_TIMEOUT_SECONDS: float = Field(default=5.0, gt=0.0)
+    OUTBOX_BOOTSTRAP_RETRY_INITIAL_SECONDS: float = Field(default=1.0, gt=0.0)
+    OUTBOX_BOOTSTRAP_RETRY_MAX_SECONDS: float = Field(default=10.0, gt=0.0)
+    OUTBOX_HEALTH_STATE_PATH: Path = Field(
+        default_factory=lambda: Path(gettempdir()) / "identity-relay-health.json"
+    )
 
     @field_validator("OUTBOX_RETRY_MAX_SECONDS")
     @classmethod

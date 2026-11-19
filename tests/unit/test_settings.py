@@ -184,7 +184,7 @@ def test_kafka_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.KAFKA_BOOTSTRAP_SERVERS == "kafka:29092"
     assert settings.bootstrap_servers == "kafka:29092"
     assert settings.KAFKA_CLIENT_ID == "andruha-identity-service"
-    assert settings.KAFKA_USER_REGISTERED_TOPIC == "identity.user-registered.v1"
+    assert settings.KAFKA_USER_REGISTERED_TOPIC == "identity.events.v1"
     assert settings.KAFKA_GROUP_ID == "andruha-identity-service"
     assert settings.KAFKA_AUTO_OFFSET_RESET == "earliest"
 

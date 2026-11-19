@@ -77,6 +77,20 @@ a key for a different token returns `409 Conflict`; concurrent winner execution 
 
 Operational endpoints are `GET /health/live`, `GET /health/ready`, and `GET /metrics`.
 
+The private `POST /internal/v1/accounts/lookup` accepts 1..100 `userIds` and
+returns ordered, unique `registeredUserIds` for completed ACTIVE Identity
+accounts. It requires `X-Service-Token` matching `IDENTITY_INTERNAL_API_TOKEN`,
+returns no credentials/PII, and is not routed by the API Gateway. Profile
+existence or Profile lifecycle alone is not account eligibility.
+
+The relay retries Kafka bootstrap with a finite timeout, attempt limit and
+backoff (`OUTBOX_BOOTSTRAP_*`). Compose supervises the process with `init: true`
+and `restart: unless-stopped`. Its probes are
+`python -m app.entrypoints.messaging.health --live` (process only) and `--ready`
+(initialized worker, PostgreSQL and Kafka). A consumed refresh retry after the
+durable replay TTL returns 401 and commits family revocation without relying
+on an expired-row cleanup job.
+
 ---
 
 ## Transactional Outbox & Messaging

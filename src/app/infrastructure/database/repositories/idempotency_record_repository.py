@@ -49,31 +49,46 @@ class IdempotencyRecordRepository:
         self, identity: IdempotencyIdentity, completed: CompletedIdempotencyResult
     ) -> bool:
         now = utc_now()
-        statement = (
-            pg_insert(IdempotencyRecordORM)
-            .values(
-                subject_id=identity.subject_id,
-                operation=identity.operation,
-                key_hash=identity.key_hash,
-                request_hash=completed.request_hash,
-                fingerprint_version=1,
-                result_type=completed.result_type,
-                result_payload=completed.result_payload,
-                result_version=completed.result_version,
-                resource_type=completed.resource_type,
-                resource_id=str(completed.resource_id)
-                if completed.resource_id is not None
-                else None,
-                resource_version=completed.resource_version,
-                created_at=now,
-                completed_at=now,
-                expires_at=now + timedelta(seconds=self._retention_seconds),
-            )
-            .on_conflict_do_nothing(
-                index_elements=["subject_id", "operation", "key_hash"]
-            )
-            .returning(IdempotencyRecordORM.id)
+        candidate = pg_insert(IdempotencyRecordORM).values(
+            subject_id=identity.subject_id,
+            operation=identity.operation,
+            key_hash=identity.key_hash,
+            request_hash=completed.request_hash,
+            fingerprint_version=1,
+            result_type=completed.result_type,
+            result_payload=completed.result_payload,
+            result_version=completed.result_version,
+            resource_type=completed.resource_type,
+            resource_id=str(completed.resource_id)
+            if completed.resource_id is not None
+            else None,
+            resource_version=completed.resource_version,
+            created_at=now,
+            completed_at=now,
+            expires_at=now + timedelta(seconds=self._retention_seconds),
         )
+        # Expiry must release the fence atomically; correctness cannot depend
+        # on a maintenance worker deleting the old row first.
+        statement = candidate.on_conflict_do_update(
+            index_elements=["subject_id", "operation", "key_hash"],
+            set_={
+                column: candidate.excluded[column]
+                for column in (
+                    "request_hash",
+                    "fingerprint_version",
+                    "result_type",
+                    "result_payload",
+                    "result_version",
+                    "resource_type",
+                    "resource_id",
+                    "resource_version",
+                    "created_at",
+                    "completed_at",
+                    "expires_at",
+                )
+            },
+            where=IdempotencyRecordORM.expires_at <= now,
+        ).returning(IdempotencyRecordORM.id)
         result = await self._session.execute(statement)
         return result.scalar_one_or_none() is not None
 

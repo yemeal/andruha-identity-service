@@ -22,6 +22,9 @@ from app.application.tokens import TokenPairIssuer
 from app.application.use_cases.get_current_user.handler import GetCurrentUserHandler
 from app.application.use_cases.login.handler import LoginHandler
 from app.application.use_cases.logout.handler import LogoutHandler
+from app.application.use_cases.lookup_registered_accounts.handler import (
+    LookupRegisteredAccountsHandler,
+)
 from app.application.use_cases.refresh.handler import (
     RefreshHandler,
     TransactionalRefreshOperation,
@@ -32,6 +35,12 @@ from app.core.settings import IdempotencySettings, SecuritySettings
 
 class ServicesProvider(Provider):
     scope = Scope.REQUEST
+
+    @dishka.provide
+    def registered_accounts_handler(
+        self, users: UserRepositoryProtocol, uow: AsyncUOWProtocol
+    ) -> LookupRegisteredAccountsHandler:
+        return LookupRegisteredAccountsHandler(users, uow)
 
     @dishka.provide
     def token_pair_issuer(

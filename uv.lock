@@ -2,6 +2,9 @@ version = 1
 revision = 3
 requires-python = ">=3.14, <4.0"
 
+[manifest]
+constraints = [{ name = "dnspython", specifier = ">=2.9.2" }]
+
 [[package]]
 name = "aiokafka"
 version = "0.14.0"

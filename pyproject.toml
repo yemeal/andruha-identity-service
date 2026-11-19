@@ -41,6 +41,7 @@ dev = [
 
 [tool.uv]
 package = false
+constraint-dependencies = ["dnspython>=2.9.2"]
 
 # ============================================================
 # RUFF CONFIGURATION

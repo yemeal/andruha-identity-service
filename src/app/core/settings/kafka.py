@@ -6,7 +6,7 @@ from app.core.settings.base import BaseContextSettings
 class KafkaSettings(BaseContextSettings):
     KAFKA_BOOTSTRAP_SERVERS: str = "kafka:29092"
     KAFKA_CLIENT_ID: str = "andruha-identity-service"
-    KAFKA_USER_REGISTERED_TOPIC: str = "identity.user-registered.v1"
+    KAFKA_USER_REGISTERED_TOPIC: str = "identity.events.v1"
     KAFKA_GROUP_ID: str = "andruha-identity-service"
     KAFKA_AUTO_OFFSET_RESET: str = "earliest"
 
